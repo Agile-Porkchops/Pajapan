@@ -17,7 +17,12 @@
 param(
     [string]$Owner       = 'Agile-Porkchops',
     [string]$Repo        = 'Agile-Porkchops/pajapan',
-    [string]$ProjectName = 'Pajapan'
+    [string]$ProjectName = 'Pajapan',
+
+    # We deliberately work from the Issues tab, not a Projects board: milestones
+    # already group M0-M7, and a second surface is a second thing to forget to
+    # update. Pass -WithProject only if you actually want the kanban back.
+    [switch]$WithProject
 )
 
 $ErrorActionPreference = 'Stop'
@@ -187,6 +192,12 @@ Before opening the PR:
         $created += $url
         Write-Host "  + $title" -ForegroundColor Green
     }
+}
+
+if (-not $WithProject) {
+    Write-Host "== project == (skipped; pass -WithProject to create one)" -ForegroundColor DarkGray
+    Write-Host "`nDone. Issues: https://github.com/$Repo/issues" -ForegroundColor Cyan
+    return
 }
 
 Write-Host "== project ==" -ForegroundColor Cyan

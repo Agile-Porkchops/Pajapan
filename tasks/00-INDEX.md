@@ -6,10 +6,13 @@ and a pile of source pays for all of it on every subsequent turn.
 - **Spec:** [`docs/specs/2026-08-28-pasabuy-design.md`](../docs/specs/2026-08-28-pasabuy-design.md)
 - **Plan:** [`docs/plan/README.md`](../docs/plan/README.md) — global constraints, repo
   layout, testing policy. Read once, then keep to hand.
-- **Issues:** <https://github.com/Agile-Porkchops/pajapan/issues> — grouped by milestone M0–M7
+- **Issues:** <https://github.com/Agile-Porkchops/pajapan/issues> — each issue carries its full instructions inline
+- **Board:** <https://github.com/Agile-Porkchops/pajapan/projects> — Priority, Size, Status, grouped by milestone
 
-Every task below maps to one GitHub issue and one branch. The issue is a pointer; the
-plan file is the instruction. Work from the plan file.
+Every task below maps to one GitHub issue and one branch. **The issue body carries the
+full instructions** — steps, code and the Done-when checklist — generated from the plan
+file by `scripts/sync-issue-bodies.ps1`. Edit the plan file and re-run the script; never
+hand-edit an issue body.
 
 ---
 

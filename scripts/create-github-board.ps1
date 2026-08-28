@@ -209,6 +209,14 @@ if ($proj) {
         gh project item-add $proj.number --owner $Owner --url $i.url 2>$null | Out-Null
     }
     Write-Host "  added $($all.Count) issues to the board" -ForegroundColor Green
+
+    # Projects v2 are always owned by an org or user — there is no repo-owned project
+    # and no way to change a project's owner. Linking is what surfaces it on the
+    # repository's Projects tab. Safe to re-run; already-linked is a no-op.
+    if ($PSCmdlet.ShouldProcess($Repo, 'link project to repo')) {
+        gh project link $proj.number --owner $Owner --repo $Repo 2>$null | Out-Null
+        Write-Host "  linked project to $Repo" -ForegroundColor Green
+    }
 }
 
 Write-Host "`nDone. Board: https://github.com/orgs/$Owner/projects" -ForegroundColor Cyan

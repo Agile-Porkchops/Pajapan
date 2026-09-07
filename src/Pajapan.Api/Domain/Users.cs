@@ -1,5 +1,3 @@
-﻿using Pajapan.Api.Enums;
-
 namespace Pajapan.Api.Domain
 {
     public class AppUser
@@ -11,5 +9,13 @@ namespace Pajapan.Api.Domain
         public string Email { get; set; } = string.Empty;
         public bool IsBlocked { get; set; }
         public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    }
+
+    public enum AppUserRole
+    {
+        Customer = 0,
+        JapanBuyer = 1,
+        Fulfilment = 2,
+        Admin = 3
     }
 }

@@ -2,7 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
-using Pajapan.Api.Enums;
+using Pajapan.Api.Domain;
 
 namespace Pajapan.Api.Tests;
 

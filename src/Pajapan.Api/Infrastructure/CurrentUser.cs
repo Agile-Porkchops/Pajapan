@@ -1,7 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Pajapan.Api.Data;
 using Pajapan.Api.Domain;
-using Pajapan.Api.Enums;
 
 namespace Pajapan.Api.Infrastructure;
 

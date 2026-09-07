@@ -1,5 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
-using Pajapan.Api.Enums;
+using Pajapan.Api.Domain;
 
 namespace Pajapan.Api.Infrastructure;
 

@@ -45,7 +45,14 @@ builder.Services.AddAuthorization(AuthPolicies.Configure);
 builder.Services.AddScoped<CurrentUser>();
 builder.Services.AddScoped<IAuthorizationHandler, RoleHandler>();
 
+builder.Services.AddProblemDetails();
+builder.Services.AddExceptionHandler<UnauthorizedExceptionHandler>();
+
 var app = builder.Build();
+
+// Inside the developer exception page, not outside it: anything this handler
+// declines keeps propagating and still renders with its stack trace.
+app.UseExceptionHandler();
 
 app.UseAuthentication();
 app.UseAuthorization();

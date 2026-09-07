@@ -80,4 +80,28 @@ public class AuthTests(DbFixture fx) : IClassFixture<DbFixture>
         Assert.NotNull(user);
         Assert.Equal(AppUserRole.Customer, user.Role);
     }
+
+    [Fact]
+    public async Task Blocked_user_is_401_not_500()
+    {
+        var sub = Guid.NewGuid();
+
+        // First call creates the row and succeeds.
+        var before = await Client(TestJwt.Mint(sub)).GetAsync("/api/me");
+        Assert.True(before.StatusCode == HttpStatusCode.OK,
+            await before.Content.ReadAsStringAsync());
+
+        await using (var db = fx.NewContext())
+        {
+            var user = await db.Users.SingleAsync(u => u.Id == sub);
+            user.IsBlocked = true;
+            await db.SaveChangesAsync();
+        }
+
+        // Same valid token. The block lives in our table, so it takes effect
+        // immediately rather than when the token expires.
+        var after = await Client(TestJwt.Mint(sub)).GetAsync("/api/me");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, after.StatusCode);
+    }
 }

@@ -326,6 +326,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     {
         o.Authority = $"{supabaseUrl}/auth/v1";
         o.MetadataAddress = $"{supabaseUrl}/auth/v1/.well-known/openid-configuration";
+        o.MapInboundClaims = false;
         o.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer   = true,  ValidIssuer   = $"{supabaseUrl}/auth/v1",
@@ -344,6 +345,15 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
   > Prefer asymmetric — it keeps the signing secret out of the API entirely.
   > `ValidateAudience` is not optional: Supabase issues `anon` tokens with the same
   > issuer, and skipping it lets an unauthenticated anon key act as a logged-in user.
+
+  > **`MapInboundClaims = false` is not optional either.** Left at its default, the
+  > JWT stack rewrites standard claim names into WS-Federation URIs — `sub` becomes
+  > `http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier`. Step 3's
+  > `FindFirst("sub")` then returns null and *every authenticated request 500s*.
+  > `NameClaimType = "sub"` does not prevent this; it only chooses which claim
+  > becomes `User.Identity.Name`. Turn the mapping off at the boundary rather than
+  > teaching `CurrentUser` to look in two places — a fallback there would keep
+  > limping along reading a claim you did not intend the day the config changes.
 
 - [ ] **3.** `CurrentUser` — the only place the caller's identity is ever read:
 

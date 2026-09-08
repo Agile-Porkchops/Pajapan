@@ -4,11 +4,38 @@
 becomes Confirmed and eligible for the shopping list.
 
 **Scope note:** manual proof-of-payment only. The gateway is out of scope for all
-eight milestones — the `Provider`/`ProviderRef` seam built in M1-01 is the entire
-preparation for it (spec §4.5, §11).
+eight milestones — the `provider`/`provider_ref` seam built in M1-01 is the entire
+preparation for it (spec §4.5, §11). When it does arrive it will be a Supabase Edge
+Function holding the secret and receiving the webhook, not a new vendor.
 
-**Read first:** spec §4.5, §8.1.
+**Read first:** spec §4.5, §8.1, §7.2.
 **Estimate:** 3–4 days · **6 tasks**
+
+---
+
+> ## ⚠ Rewritten for the 2026-09-08 pivot — detail deliberately pending
+>
+> Structural notes only. Write each task's SQL when you start it, against the running
+> local stack. Requirements and **Done when** items below still bind.
+
+---
+
+## The one improvement the pivot hands this milestone
+
+The old design had `OrderTotals.RecomputeAsync` — one C# method that every money path
+in M3–M6 had to remember to call. The Done-when even said so: *`git grep -n
+"AmountPaidPhp ="` shows exactly one assignment*. That is a convention enforced by
+grep, which is to say enforced by whoever remembers to run it.
+
+In Postgres this becomes a **trigger on `payment` and `refund` that recomputes the
+parent order**. Nothing has to remember; a row cannot be written without the recompute
+happening. The forget-to-call bug stops existing rather than being tested for.
+
+Two things to verify rather than assume when writing it:
+
+- the trigger must not recurse (it writes `order`, which must not re-fire it)
+- confirmation stays **one-way** — a later refund must not un-confirm a bought order.
+  That rule was a comment in the C# version and is easy to lose in translation.
 
 ---
 
@@ -17,45 +44,33 @@ preparation for it (spec §4.5, §11).
 **Depends on:** M2-06, M1-04
 **Branch:** `feature/m3-submit-payment`
 
-**Files:**
-- Create: `Features/Payments/SubmitPaymentEndpoint.cs`, `PaymentDtos.cs`
-- Test: `tests/Pajapan.Api.Tests/PaymentTests.cs`
+**Becomes:** a `submit_payment_proof` function. `payment` grants no direct insert —
+an unverified payment row is still a money row.
 
-**Steps:**
+**Requirements:**
 
-- [ ] **1.** `POST /api/orders/{id}/payments`, Customer, own order only, with an
-      `Idempotency-Key` header (Global Constraint 8):
-
-```jsonc
-{ "method": "GCash", "amountPhp": "2450.00",
-  "referenceNo": "0123456789012", "proofPath": "payment-proofs/2026/08/<uuid>.webp" }
-```
-
-- [ ] **2.** Validation:
-      - order belongs to the caller, else **404**
-      - order status is `AwaitingPayment` or `PaymentSubmitted`, else 409
-      - `amountPhp > 0`
-      - `proofPath` starts with `payment-proofs/` — a client-supplied path pointing at
-        another bucket must be rejected, not trusted
-      - `referenceNo` is 6–40 chars
-
-- [ ] **3.** A duplicate `referenceNo` hits the unique index from M1-01. Catch it and
-      return **409 with a clear message**: "This reference number has already been
-      submitted." Do not let it surface as a 500 — the customer needs to know it is
-      their screenshot, not your server.
-
-- [ ] **4.** Insert as `Status = Submitted`. Set the order to `PaymentSubmitted`.
-      **Do not touch `AmountPaidPhp`** — an unverified payment is not money.
-
-- [ ] **5.** Tests: another customer's order → 404; duplicate reference → 409; a
-      `proofPath` of `product-photos/x.webp` → 400; submitting does not change
-      `AmountPaidPhp`.
-
-- [ ] **6.** Commit.
+- [ ] Takes order id, method, amount, reference number, proof path, and an idempotency
+      key (Global Constraint 8).
+- [ ] Order must belong to the caller — checked from `auth.uid()`, not a parameter.
+- [ ] Order status must be `AwaitingPayment` or `PaymentSubmitted`; anything else is
+      refused.
+- [ ] `amount_php > 0`; `reference_no` 6–40 chars.
+- [ ] `proof_path` must be under the caller's own payment-proofs prefix. **Belt and
+      braces with M1-04's storage policy** — the policy stops them writing the object,
+      this stops them *referencing* someone else's. A path pointing at another bucket
+      is rejected, not trusted.
+- [ ] Inserts as `Submitted` and sets the order to `PaymentSubmitted`. **Does not touch
+      `amount_paid_php`** — an unverified payment is not money.
+- [ ] A duplicate `reference_no` hits M1-01's unique index. Return a clear, specific
+      refusal — "this reference number has already been submitted" — not a raw
+      constraint error. The customer needs to know it is their screenshot, not your
+      server.
 
 **Done when:**
-- [ ] All four tests pass
-- [ ] A duplicate reference returns 409 with a human-readable message, not a 500
+- [ ] Another customer's order cannot be paid against
+- [ ] A duplicate reference gives a human-readable refusal, not a raw 500
+- [ ] A `proof_path` pointing at `product-photos/` is rejected
+- [ ] Submitting does not change `amount_paid_php`
 
 ---
 
@@ -64,32 +79,21 @@ preparation for it (spec §4.5, §11).
 **Depends on:** M3-01
 **Branch:** `feature/m3-payment-ui`
 
-**Files:**
-- Create: `web/src/features/orders/PaymentPanel.tsx`, `PaymentProofForm.tsx`
-- Modify: `web/src/features/orders/OrderDetailPage.tsx`
+**Becomes:** unchanged; calls `.rpc()` instead of `POST`.
 
-**Steps:**
+**Requirements:**
 
-- [ ] **1.** Show the payable amount large and copyable, plus the account details per
-      method (GCash number, BPI account). Account details come from configuration, not
-      hardcoded in a component.
-
-- [ ] **2.** A tap-to-copy button on the amount and on the account number. Most
-      payment errors are transcription errors.
-
-- [ ] **3.** Form: method select, amount (prefilled with the balance due), reference
-      number, proof upload (reuse `PhotoUploader` from M1-06 with purpose
-      `payment-proof`).
-
-- [ ] **4.** Reuse `useIdempotencyKey` from M2-07, generated on mount.
-
-- [ ] **5.** After submit, show "Waiting for verification" with the submitted amount,
-      reference and thumbnail. Allow submitting a second payment if a balance remains.
-
-- [ ] **6.** State the timeframe honestly — "usually verified within a few hours" —
-      rather than implying it is instant.
-
-- [ ] **7.** Commit.
+- [ ] Payable amount shown large and copyable, plus per-method account details (GCash
+      number, BPI account) **from configuration**, not hardcoded in a component.
+- [ ] Tap-to-copy on the amount and the account number. Most payment errors are
+      transcription errors.
+- [ ] Form: method select, amount prefilled with the balance due, reference number,
+      proof upload (`PhotoUploader` from M1-06, `payment-proofs` bucket).
+- [ ] Idempotency key generated on mount, reused from M2-07.
+- [ ] After submit: "Waiting for verification" with amount, reference and thumbnail.
+      Allow a second payment if a balance remains.
+- [ ] State the timeframe honestly — "usually verified within a few hours" — rather
+      than implying it is instant.
 
 **Done when:**
 - [ ] Tap-to-copy works on iOS Safari and Android Chrome
@@ -98,73 +102,34 @@ preparation for it (spec §4.5, §11).
 
 ---
 
-## M3-03 · Verification queue API
+## M3-03 · Verification queue 🔴
 
 **Depends on:** M3-01
-**Branch:** `feature/m3-verify-api`
+**Branch:** `feature/m3-verify`
+**Model:** Opus. This decides when money counts.
 
-**Files:**
-- Create: `Features/Payments/VerificationEndpoints.cs`,
-  `Features/Payments/OrderTotals.cs`
+**Becomes:** a `v_verification_queue` view for the read, plus `verify_payment` and
+`reject_payment` functions for the writes.
 
-**Steps:**
+**Requirements:**
 
-- [ ] **1.** Endpoints, `Fulfilment | Admin`:
-
-```
-GET  /api/admin/payments?status=Submitted&runId=
-POST /api/admin/payments/{id}/verify
-POST /api/admin/payments/{id}/reject     { reason }
-```
-
-- [ ] **2.** The queue returns the payment, a signed read URL for the proof, the
-      order code, the customer name, the amount due and the amount already verified —
-      everything needed to decide, so the verifier never has to open a second screen.
-
-- [ ] **3.** `VerifiedByUserId` and `VerifiedAt` come from `CurrentUser`. The caller
-      cannot supply them (spec §6.1).
-
-- [ ] **4.** Verify and reject are only valid from `Submitted`. From any other state,
-      409 — this stops a double-click from double-counting money.
-
-- [ ] **5.** `OrderTotals.RecomputeAsync(order)` — the single place order money is
-      recalculated. Every caller in M3–M6 uses it; nothing recomputes totals inline:
-
-```csharp
-public static async Task RecomputeAsync(AppDbContext db, Order order, CancellationToken ct)
-{
-    order.AmountPaidPhp = await db.Payments
-        .Where(p => p.OrderId == order.Id && p.Status == PaymentStatus.Verified)
-        .SumAsync(p => p.AmountPhp, ct);
-
-    order.AmountRefundedPhp = await db.Refunds
-        .Where(r => r.OrderId == order.Id && r.Status == RefundStatus.Completed)
-        .SumAsync(r => r.AmountPhp, ct);
-
-    // Confirmation is one-way. A later refund must not un-confirm a bought order.
-    if (order.Status == OrderStatus.PaymentSubmitted &&
-        order.AmountPaidPhp >= order.GrandTotalPhp)
-    {
-        order.Status = OrderStatus.Confirmed;
-        order.ConfirmedAt ??= DateTimeOffset.UtcNow;
-    }
-}
-```
-
-- [ ] **6.** Reject requires a non-empty reason, shown to the customer, and returns
-      the order to `AwaitingPayment`.
-
-- [ ] **7.** Tests: verifying twice → 409 and `AmountPaidPhp` counted once; underpayment
-      leaves the order in `PaymentSubmitted`; exact payment confirms; a `JapanBuyer`
-      token → 403.
-
-- [ ] **8.** Commit.
+- [ ] The queue view gives the verifier everything needed to decide without opening a
+      second screen: payment, a signed read URL for the proof, order code, customer
+      name, amount due, amount already verified. Readable by Fulfilment and Admin only.
+- [ ] `verified_by_user_id` and `verified_at` come from `auth.uid()` inside the
+      function. The caller cannot supply them (spec §6.1).
+- [ ] Verify and reject are valid **only from `Submitted`**. From any other state,
+      refuse — this is what stops a double-click double-counting money.
+- [ ] Reject requires a non-empty reason, shown to the customer, and returns the order
+      to `AwaitingPayment`.
+- [ ] Totals recomputed by the trigger above, not by the function's own arithmetic.
 
 **Done when:**
-- [ ] The four tests pass
-- [ ] Double-clicking verify counts the money once
-- [ ] `git grep -n "AmountPaidPhp ="` shows exactly one assignment, inside
-      `OrderTotals`
+- [ ] Verifying twice counts the money once — the second call is refused
+- [ ] Underpayment leaves the order in `PaymentSubmitted`; exact payment confirms it
+- [ ] A JapanBuyer cannot read the queue view **or** call either function
+- [ ] `amount_paid_php` is written in exactly one place — now the trigger, verified by
+      searching the migrations rather than the application code
 
 ---
 
@@ -173,29 +138,21 @@ public static async Task RecomputeAsync(AppDbContext db, Order order, Cancellati
 **Depends on:** M3-03
 **Branch:** `feature/m3-verify-ui`
 
-**Files:**
-- Create: `web/src/features/admin/payments/VerifyQueuePage.tsx`, `ProofViewer.tsx`
+**Becomes:** unchanged.
 
-**Steps:**
+**Requirements:**
 
-- [ ] **1.** Queue, oldest first. Each row: order code, customer, claimed amount,
-      amount due, reference number, proof thumbnail, Verify / Reject.
-
-- [ ] **2.** Click the thumbnail to open the full proof in a lightbox with zoom —
-      GCash reference numbers are small in a screenshot.
-
-- [ ] **3.** **Highlight a mismatch** between the claimed amount and the amount due
-      before the verifier clicks. Catching an underpayment after confirmation is much
-      more expensive than catching it here.
-
-- [ ] **4.** Reject opens a required-reason dialog with three common presets (wrong
-      amount, unreadable screenshot, reference not found) plus free text.
-
-- [ ] **5.** Optimistic removal from the queue, with rollback and a toast on failure.
-
-- [ ] **6.** Show a queue count badge in the admin nav.
-
-- [ ] **7.** Commit.
+- [ ] Queue oldest first: order code, customer, claimed amount, amount due, reference,
+      proof thumbnail, Verify / Reject.
+- [ ] Thumbnail opens a lightbox with zoom — GCash reference numbers are small in a
+      screenshot.
+- [ ] **Highlight a mismatch** between claimed amount and amount due *before* the
+      verifier clicks. Catching an underpayment after confirmation is far more
+      expensive than catching it here.
+- [ ] Reject opens a required-reason dialog with three presets (wrong amount,
+      unreadable screenshot, reference not found) plus free text.
+- [ ] Optimistic removal from the queue with rollback and a toast on failure.
+- [ ] Queue count badge in the admin nav.
 
 **Done when:**
 - [ ] A payment 100 pesos short is visibly flagged before verifying
@@ -209,86 +166,75 @@ public static async Task RecomputeAsync(AppDbContext db, Order order, Cancellati
 **Depends on:** M3-03
 **Branch:** `feature/m3-balances`
 
-**Steps:**
+**Becomes:** `amount_due_php` is a computed column in the customer's order view —
+`grand_total_php − amount_paid_php + amount_refunded_php`, cast to text. The client
+never does this arithmetic, and now cannot: it never receives the operands as numbers.
 
-- [ ] **1.** `OrderDto` exposes `amountDuePhp = GrandTotalPhp − AmountPaidPhp +
-      AmountRefundedPhp`, computed server-side. The client never does this arithmetic.
+**Requirements:**
 
-- [ ] **2.** Order list filters: Unpaid, Partially paid, Paid, Overpaid. Overpaid is a
+- [ ] Order list filters: Unpaid, Partially paid, Paid, **Overpaid**. Overpaid is a
       real state that needs a human — surface it rather than hiding it.
-
-- [ ] **3.** Admin can adjust `ShippingFeePhp` and `ServiceFeePhp` while the order is
-      `AwaitingPayment` or `PaymentSubmitted`. Doing so recomputes `GrandTotalPhp` and
-      calls `OrderTotals.RecomputeAsync`. **Refused once the order is `Confirmed`** —
-      changing the price after someone has paid in full is not a thing the system
-      should allow silently.
-
-- [ ] **4.** Tests: two partial payments summing to the total confirm the order; a fee
-      change on a Confirmed order → 409.
-
-- [ ] **5.** Commit.
+- [ ] Admin may adjust `shipping_fee_php` and `service_fee_php` while the order is
+      `AwaitingPayment` or `PaymentSubmitted`, which recomputes `grand_total_php`.
+      **Refused once the order is `Confirmed`** — changing the price after someone has
+      paid in full is not something the system should allow silently. This is a
+      column-and-state rule, so it belongs in a function or a trigger, not a policy.
 
 **Done when:**
-- [ ] Two partial payments confirm the order at exactly the total
+- [ ] Two partial payments summing to the total confirm the order at exactly the total
 - [ ] An overpaid order appears under the Overpaid filter
-- [ ] Editing fees on a Confirmed order is refused
+- [ ] Editing fees on a Confirmed order is refused **by the database**
 
 ---
 
-## M3-06 · Reconciliation check
+## M3-06 · Reconciliation check 🔴
 
 **Depends on:** M3-05
 **Branch:** `feature/m3-reconciliation`
+**Model:** Opus.
 
-> The cached `AmountPaidPhp` (spec §4.4) is a denormalisation. This task is what makes
-> it safe: a check that proves the cache still matches the payment rows.
+> The cached `amount_paid_php` (spec §4.4) is a denormalisation. This task is what
+> makes it safe: a check proving the cache still matches the payment rows.
 
-**Files:**
-- Create: `Features/Reports/ReconciliationEndpoint.cs`
-- Test: `tests/Pajapan.Api.Tests/ReconciliationTests.cs`
-
-**Steps:**
-
-- [ ] **1.** `GET /api/admin/reconciliation` (Admin) returns every order where the
-      cached totals disagree with the sums:
+**Becomes:** a `v_reconciliation` view plus a repair function. **The old task's SQL
+carries over essentially unchanged** — it was already SQL, and it is the one piece of
+the C# plan that needed no translation at all:
 
 ```sql
-select o.id, o.order_code, o.amount_paid_php,
-       coalesce(p.total, 0) as actual_paid,
-       o.amount_refunded_php, coalesce(r.total, 0) as actual_refunded
-from   "order" o
-left   join (select order_id, sum(amount_php) total from payment
-             where status = 1 group by order_id) p on p.order_id = o.id
-left   join (select order_id, sum(amount_php) total from refund
-             where status = 1 group by order_id) r on r.order_id = o.id
-where  o.deleted_at is null
-  and (o.amount_paid_php     <> coalesce(p.total, 0)
-    or o.amount_refunded_php <> coalesce(r.total, 0));
+SELECT o.id, o.order_code, o.amount_paid_php,
+       coalesce(p.total, 0) AS actual_paid,
+       o.amount_refunded_php, coalesce(r.total, 0) AS actual_refunded
+FROM   "order" o
+LEFT   JOIN (SELECT order_id, sum(amount_php) total FROM payment
+             WHERE status = 'Verified' GROUP BY order_id) p ON p.order_id = o.id
+LEFT   JOIN (SELECT order_id, sum(amount_php) total FROM refund
+             WHERE status = 'Completed' GROUP BY order_id) r ON r.order_id = o.id
+WHERE  o.deleted_at IS NULL
+  AND (o.amount_paid_php     <> coalesce(p.total, 0)
+    OR o.amount_refunded_php <> coalesce(r.total, 0));
 ```
 
-- [ ] **2.** Show it on the finance dashboard in M6. Empty is the normal state; any
-      row is a bug worth chasing the same day.
+**Requirements:**
 
-- [ ] **3.** A test that runs the full lifecycle — order, two payments, one refund —
-      and asserts the reconciliation query returns zero rows.
-
-- [ ] **4.** `POST /api/admin/reconciliation/repair` (Admin) recomputes the caches for
-      a named order. Manual, per-order, logged — never a sweep that quietly rewrites
-      every row and destroys the evidence of what went wrong.
-
-- [ ] **5.** Commit.
+- [ ] Admin-only. Shown on the M6 finance dashboard. Empty is the normal state; any row
+      is a bug worth chasing the same day.
+- [ ] A repair function recomputes the caches **for one named order**. Manual,
+      per-order, logged — never a sweep that quietly rewrites every row and destroys
+      the evidence of what went wrong.
+- [ ] A test running the full lifecycle — order, two payments, one refund — ending with
+      zero reconciliation rows.
 
 **Done when:**
 - [ ] The lifecycle test ends with zero reconciliation rows
 - [ ] Manually corrupting `amount_paid_php` with SQL makes that order appear in the
-      report, and `repair` fixes exactly that one order
+      view, and repair fixes exactly that one order and no others
 
 ---
 
 ## Milestone exit
 
 - [ ] A real payment has been submitted and verified on staging, confirming an order
-- [ ] Only `OrderTotals.RecomputeAsync` writes `AmountPaidPhp`
+- [ ] `amount_paid_php` is written only by the recompute trigger
 - [ ] Reconciliation returns zero rows
-- [ ] `Payment.Provider` and `ProviderRef` exist, are null everywhere, and no code
+- [ ] `payment.provider` and `provider_ref` exist, are null everywhere, and nothing
       reads them yet

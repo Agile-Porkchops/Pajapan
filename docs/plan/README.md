@@ -39,6 +39,10 @@ spec §10 unless noted.
    — not in a column, not in an RPC function's own locals. In TypeScript, never
    arithmetic on a float you got from JSON: money crosses the wire as a string,
    parsed with a decimal-safe helper on the client.
+   **PostgREST serialises `numeric` as a JSON number**, so this takes deliberate work
+   — every view and RPC return type casts money to text (`price_php::text`). There is
+   no serializer hook to do it globally the way the retired API had; a money column
+   exposed raw arrives in the browser as a float64.
 2. Every monetary column and field names its currency: `amount_php`,
    `actual_cost_jpy`. There is no bare `amount` anywhere in this codebase.
 3. FX rates are recorded at the moment of use (`expense.fx_rate_to_php`), never

@@ -48,11 +48,23 @@ builder.Services.AddScoped<IAuthorizationHandler, RoleHandler>();
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<UnauthorizedExceptionHandler>();
 
+var corsOrigins = builder.Configuration.GetSection("Cors:Origins").Get<string[]>();
+if (corsOrigins is null or { Length: 0 })
+    throw new InvalidOperationException("Configuration 'Cors:Origins' is not set.");
+
+// No AllowCredentials(): the web app sends the bearer token as an Authorization
+// header, never a cookie, so credentialed CORS is unneeded attack surface.
+builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
+    .WithOrigins(corsOrigins)
+    .AllowAnyHeader().AllowAnyMethod()));
+
 var app = builder.Build();
 
 // Inside the developer exception page, not outside it: anything this handler
 // declines keeps propagating and still renders with its stack trace.
 app.UseExceptionHandler();
+
+app.UseCors();
 
 app.UseAuthentication();
 app.UseAuthorization();

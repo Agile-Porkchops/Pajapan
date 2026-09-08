@@ -13,6 +13,9 @@ public sealed class ApiFactory(string connectionString) : WebApplicationFactory<
         builder.UseSetting("Supabase:Url", TestJwt.SupabaseUrl);
         builder.UseSetting("Supabase:ServiceKey", "not-a-real-key");
         builder.UseSetting("ConnectionStrings:Db", connectionString);
+        // Same reasoning as the three above: don't depend on appsettings.Development.json
+        // resolving from disk, which is exactly the assumption that breaks on CI.
+        builder.UseSetting("Cors:Origins:0", "http://localhost:5173");
         builder.UseEnvironment("Development");
 
         builder.ConfigureTestServices(services =>

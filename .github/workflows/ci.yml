@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No secrets committed
+        # Two exclusions, both verified necessary and confirmed not to mask a
+        # real leak (planted a fake JWT in web/src/ and confirmed it's still
+        # caught before removing it):
+        #  - package-lock.json's base64 integrity hashes coincidentally match
+        #    eyJ... often enough to fail CI on ordinary dependency updates.
+        #  - workflows/ is excluded, not all of .github/, because this file's
+        #    own pattern text is a self-match: the literal string
+        #    "postgres://[^_]" written below satisfies its own regex. Secrets
+        #    still belong in ${{ secrets.X }}, never hardcoded here -- this
+        #    exclusion is about the detector's own source, not a real
+        #    location secrets are expected to end up.
+        run: |
+          ! git grep -nE "eyJ[A-Za-z0-9_-]{20,}|sb_secret_|postgres://[^_]" \
+            -- ':!*.example' ':!docs/' ':!*/package-lock.json' ':!package-lock.json' ':!.github/workflows/'
+
+      - name: Web never queries Supabase directly
+        # A leading bare "!" in a single-line `run:` scalar is ambiguous with
+        # YAML's tag-indicator syntax and wasn't reliably applied -- use the
+        # same block-scalar form as the step above, which does show it.
+        run: |
+          ! git grep -nE "supabase\.(from|rpc)\(" -- web/
+
+  api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - run: dotnet restore
+
+      - run: dotnet build --no-restore
+
+      # Testcontainers needs Docker, which ubuntu-latest runners have
+      # pre-installed -- no extra setup step required.
+      - run: dotnet test --no-build
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm run lint

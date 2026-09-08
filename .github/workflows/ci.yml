@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No secrets committed
+        # package-lock.json's base64 integrity hashes coincidentally match the
+        # eyJ... pattern often enough to fail CI on ordinary dependency
+        # updates -- excluded, verified this doesn't mask a real leak by
+        # planting a fake JWT elsewhere in web/ and confirming it's still caught.
+        run: |
+          ! git grep -nE "eyJ[A-Za-z0-9_-]{20,}|sb_secret_|postgres://[^_]" \
+            -- ':!*.example' ':!docs/' ':!*/package-lock.json' ':!package-lock.json'
+
+      - name: Web never queries Supabase directly
+        run: ! git grep -nE "supabase\.(from|rpc)\(" -- web/
+
+  api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - run: dotnet restore
+
+      - run: dotnet build --no-restore
+
+      # Testcontainers needs Docker, which ubuntu-latest runners have
+      # pre-installed -- no extra setup step required.
+      - run: dotnet test --no-build
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm run lint

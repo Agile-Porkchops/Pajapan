@@ -45,6 +45,10 @@ builder.Services.AddAuthorization(AuthPolicies.Configure);
 builder.Services.AddScoped<CurrentUser>();
 builder.Services.AddScoped<IAuthorizationHandler, RoleHandler>();
 
+// CanConnectAsync() against the real database -- a 200 that never touches it
+// tells an orchestrator nothing.
+builder.Services.AddHealthChecks().AddDbContextCheck<AppDbContext>();
+
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<UnauthorizedExceptionHandler>();
 
@@ -70,6 +74,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapMeEndpoints();
+app.MapHealthChecks("/health");
 
 app.Run();
 

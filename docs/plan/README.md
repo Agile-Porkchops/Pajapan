@@ -7,16 +7,8 @@
 **Goal:** A pasabuy web app — Japan pre-order catalog, PH customers, batch shipping,
 and per-run profit tracking — usable by a 3-person team for a real buying trip.
 
-**Architecture:** React SPA → Supabase, directly. **No backend server.** Reads are
-RLS-filtered PostgREST queries through `supabase-js`; money-critical writes are
-Postgres `SECURITY DEFINER` functions called via `.rpc()`. Row-Level Security is the
-authorization boundary — there is no application layer behind it.
-
-> **Pivoted 2026-09-08**, mid-M0. The original plan was React → C# Minimal API →
-> Postgres. `src/Pajapan.Api/` and its tests are retired; M0-04, M0-06 and M0-07 are
-> superseded. M1–M7 below have had their **structural** notes rewritten for RLS/RPC;
-> their detailed step-by-step content is deliberately still pending, to be written
-> milestone-by-milestone against a running database rather than guessed at in bulk.
+**Architecture:** React SPA → C# Minimal API → Supabase Postgres. The API is the only
+holder of a database credential; the browser never queries Postgres directly.
 
 **Spec:** [`docs/specs/2026-08-28-pasabuy-design.md`](../specs/2026-08-28-pasabuy-design.md)
 — read it before starting any task. The plan argues *from* the spec; where they
@@ -35,21 +27,16 @@ spec §10 unless noted.
 
 **Money**
 
-1. All money is `numeric(12,2)` in Postgres. Never `float`/`double precision`/`real`
-   — not in a column, not in an RPC function's own locals. In TypeScript, never
-   arithmetic on a float you got from JSON: money crosses the wire as a string,
-   parsed with a decimal-safe helper on the client.
-   **PostgREST serialises `numeric` as a JSON number**, so this takes deliberate work
-   — every view and RPC return type casts money to text (`price_php::text`). There is
-   no serializer hook to do it globally the way the retired API had; a money column
-   exposed raw arrives in the browser as a float64.
-2. Every monetary column and field names its currency: `amount_php`,
-   `actual_cost_jpy`. There is no bare `amount` anywhere in this codebase.
-3. FX rates are recorded at the moment of use (`expense.fx_rate_to_php`), never
-   looked up at report time.
-4. **Prices come from the database.** No RPC function takes a price parameter — not
-   "takes it and ignores it", does not have one. The client sends `product_id` +
-   `qty`; the function looks up `product.price_php` itself.
+1. All money is `decimal` — in C# (`decimal`), in Postgres (`numeric(12,2)`), and in
+   TypeScript never arithmetic on a float you got from JSON. **Never `float`,
+   `double`, `real`, or JS `number` arithmetic on money.** Money crosses the wire as
+   a JSON string, parsed with a decimal-safe helper on the client.
+2. Every monetary column and field names its currency: `AmountPhp`, `ActualCostJpy`.
+   There is no bare `Amount` anywhere in this codebase.
+3. FX rates are recorded at the moment of use (`Expense.FxRateToPhp`), never looked
+   up at report time.
+4. **Prices come from the server.** A request body containing a price is ignored.
+   The client sends `productId` + `qty`; the server looks up `Product.PricePhp`.
 
 **Data**
 
@@ -58,72 +45,50 @@ spec §10 unless noted.
 6. Timestamps are `timestamptz`, stored UTC. Convert at render. Run cutoffs are
    authored and displayed in JST (`Asia/Tokyo`); everything customer-facing displays
    `Asia/Manila`.
-7. Soft delete (`deleted_at timestamptz null`) on anything money touches: `order`,
-   `order_item`, `payment`, `refund`, `expense`, `shipment`. Hard delete only on
-   draft catalog entries. **A soft-deleted row must be excluded by the RLS policy
-   itself**, not only by a client-side `.is('deleted_at', null)` filter a caller can
-   simply omit.
+7. Soft delete (`DeletedAt timestamptz null`) on anything money touches: `Order`,
+   `OrderItem`, `Payment`, `Refund`, `Expense`, `Shipment`. Hard delete only on
+   draft catalog entries.
 
 **Correctness**
 
-8. `place_order` and `submit_payment_proof` take a client-generated
-   `p_idempotency_key uuid` behind a unique index; the function returns the existing
-   row rather than inserting a second. Double submission produces **one** record. No
-   automatic retry on any write path — TanStack Query's mutation retry stays off.
-9. **No silent error.** `supabase-js` does not throw; it returns `{ data, error }`.
-   Every call site checks `error`. Destructuring only `data` fails review — it turns
-   a permission denial into an empty list, and a screen that renders zeros because
-   the query was refused is worse than one that renders an error.
+8. `POST /api/orders` and `POST /api/orders/{id}/payments` require an
+   `Idempotency-Key` header. Double submission produces **one** record. No automatic
+   retry on any write path.
+9. **No silent `catch`.** A caught exception is logged and surfaced. A screen that
+   cannot load its data says so — it never renders zeros, an empty list, or an
+   all-clear. `catch { }` and `catch { return []; }` fail review.
 
 **Security** (spec §6.1)
 
-10. `auth.uid()` is the only source of identity. No RLS policy and no RPC function
-    takes a user id, customer id, or role as a parameter. **A `p_customer_id`
-    argument fails review.**
-11. Another customer's row returns **zero rows**, by RLS — not by a hand-written
-    check that could be forgotten.
-12. **Every table in `public` has RLS enabled.** Asserted by a test that enumerates
-    `pg_tables` and fails on `rowsecurity = false`, not by remembering to type it. A
-    table without RLS is world-readable to anyone holding the anon key, which is
-    public by design.
-13. **Every `SECURITY DEFINER` function pins `SET search_path` and performs its own
-    `auth.uid()` authorization check as its first statement.** These functions bypass
-    RLS entirely; one missing its check is a total breach, not a bug. Also asserted
-    by a test, over `pg_proc`.
-14. Money-touching tables grant **no** direct `INSERT`/`UPDATE`/`DELETE` to
-    `authenticated`. The only write path is a function.
-15. The browser holds only the **anon** key. A service-role key never appears in
-    `web/`, in a `VITE_*` variable, or in the repo. Committed config uses
-    `__SET_LOCALLY__` placeholders. The only place a secret may ever live is inside
-    an Edge Function.
+10. `CustomerId` comes from the JWT `sub` claim only. Never from a body, query
+    string, route parameter, or header.
+11. Another customer's resource returns `404`, not `403`.
+12. Route identifiers are UUIDs. `OrderCode` is displayed but never the lookup key on
+    a customer endpoint.
+13. The Supabase service key lives only in the API's environment. Never in `web/`,
+    never in a `VITE_*` variable, never committed. Committed config uses
+    `__SET_LOCALLY__` placeholders.
 
 **Process**
 
-16. Branch per task: `feature/<milestone>-<slug>`, e.g. `feature/m2-place-order`.
+14. Branch per task: `feature/<milestone>-<slug>`, e.g. `feature/m2-place-order`.
     Never commit to `main`.
-17. Conventional commits: `feat:`, `fix:`, `test:`, `chore:`, `docs:`.
-18. Every task ends with its **Done when** checklist verified by actually running the
-    commands — not by reading the code and concluding it should work. For RLS and
-    RPC that means running it **as each role against a real database**, not reading
-    the policy and concluding it scopes correctly.
+15. Conventional commits: `feat:`, `fix:`, `test:`, `chore:`, `docs:`.
+16. Every task ends with its **Done when** checklist verified by actually running the
+    commands — not by reading the code and concluding it should work.
 
 ---
 
 ## Versions
 
-Actual installed versions, verified 2026-09-08 — not aspirational pins.
-
 | Thing | Version | Note |
 |---|---|---|
-| Node | 24.14.0 | |
-| React | 19.2 | |
-| Vite | 8.2 | |
-| TypeScript | 6.0 | |
-| Vitest | 5.0 | |
-| Tailwind | 4.3 | |
-| `@supabase/supabase-js` | 2.116 | already in `web/` since M0-05 |
-| Supabase CLI | **not yet installed** | first task of the reworked M0 — needed for local Postgres, migrations, and every RLS test |
-| Postgres | 17 | whatever Supabase provisions; `security_invoker` views need ≥15 |
+| .NET SDK | 10.0.400 | `& "C:\Program Files\dotnet\dotnet.exe"` — `dotnet` on PATH is the x86 runtime-only install with no SDK |
+| Node | 22 LTS | |
+| EF Core | 10.x | with `Npgsql.EntityFrameworkCore.PostgreSQL` |
+| React | 19 | |
+| Vite | 7 | |
+| Postgres | 17 | whatever Supabase provisions |
 
 ---
 
@@ -133,18 +98,41 @@ Vertical slices, not technical layers. Files that change together live together.
 
 ```
 pajapan/
-├── supabase/
-│   ├── config.toml
-│   ├── migrations/          timestamped SQL — the whole backend lives here
-│   ├── functions/           Edge Functions (none yet; the payment webhook lands here)
-│   ├── tests/               Vitest, run through supabase-js against the local stack
-│   └── seed.sql             users of every role + fixture data for local dev and tests
+├── Pajapan.sln
+├── src/
+│   └── Pajapan.Api/
+│       ├── Program.cs                  composition root, endpoint registration
+│       ├── Domain/                      entities + enums, one file per aggregate
+│       │   ├── Catalog.cs               Category, Product, ProductPhoto
+│       │   ├── Ordering.cs              Order, OrderItem, CustomRequest
+│       │   ├── Money.cs                 Payment, Refund, Expense
+│       │   ├── Logistics.cs             Run, Shipment, Courier
+│       │   └── Users.cs                 AppUser, Address
+│       ├── Data/
+│       │   ├── AppDbContext.cs
+│       │   ├── Configurations/          one IEntityTypeConfiguration per entity
+│       │   └── Migrations/
+│       ├── Features/                    one folder per slice: endpoints + DTOs + validators
+│       │   ├── Catalog/
+│       │   ├── Orders/
+│       │   ├── Payments/
+│       │   ├── Buying/
+│       │   ├── Shipping/
+│       │   ├── Reports/
+│       │   └── Uploads/
+│       └── Infrastructure/
+│           ├── CurrentUser.cs           reads JWT sub, loads AppUser + role
+│           ├── AuthPolicies.cs          role policy names
+│           ├── SupabaseStorage.cs       signed upload URLs
+│           └── ProblemDetailsSetup.cs
+├── tests/
+│   └── Pajapan.Api.Tests/               xUnit + Testcontainers (real Postgres)
 ├── web/
 │   ├── src/
 │   │   ├── main.tsx, App.tsx, router.tsx
-│   │   ├── lib/             supabase client, auth, money, formatting
-│   │   ├── components/ui/   shadcn/ui, copied in
-│   │   └── features/        catalog, cart, checkout, orders, admin/*
+│   │   ├── lib/                         apiClient, auth, money, formatting
+│   │   ├── components/ui/               shadcn/ui, copied in
+│   │   └── features/                    catalog, cart, checkout, orders, admin/*
 │   └── index.html, vite.config.ts
 ├── scripts/
 ├── docs/
@@ -153,15 +141,9 @@ pajapan/
 └── tasks/
 ```
 
-**One migration per logical change, and a table's RLS policies live in the same
-migration as the table itself.** Never `CREATE TABLE` in one migration and
-`CREATE POLICY` in a later one — that leaves a window where the table exists
-world-readable, and it makes "did this table ever get policies?" a question you have
-to answer by reading history instead of by reading one file.
-
-**Migrations are the only way the schema changes.** No edits through the Supabase
-dashboard's SQL editor, on any project including staging: a change made there exists
-in no file, survives no reset, and reaches production never.
+**Why one file per aggregate rather than one per entity:** `Order` and `OrderItem`
+are never edited apart. Splitting them costs a file switch on every change and buys
+nothing.
 
 ---
 
@@ -171,31 +153,17 @@ in no file, survives no reset, and reaches production never.
 
 Write a test when the thing under test is: a price calculation, a status transition,
 an authorization rule, an idempotency guard, or a report aggregate. Do not write a
-test that asserts inserting a category inserts a category — the database already
+test that asserts `POST /api/categories` inserts a category — the database already
 enforces that, and the test only breaks when you rename a column.
 
 | Layer | Tool | What |
 |---|---|---|
-| Database | Supabase CLI local stack + Vitest through `supabase-js` | RLS policies, RPC behaviour, money arithmetic, idempotency. Real Postgres + real GoTrue + real PostgREST, in Docker. Never a mocked client — a mock proves the test author's belief about a policy, which is the exact thing under test. |
+| API | xUnit + Testcontainers Postgres | Endpoint tests against a real schema. Not SQLite, not `UseInMemoryDatabase` — the model relies on Postgres types, unique indexes and `numeric` precision that neither reproduces. |
 | Web | Vitest | Money formatting, cart math, form validation. No component-render tests for layout. |
 | E2E | Manual, scripted in M7-07 | Playwright is not worth the maintenance at this team size. |
 
-**How an RLS test is written.** It signs in — `supabase.auth.signInWithPassword`
-against a user seeded in `seed.sql` — and then asserts on what comes back from a real
-query. It does **not** read the policy SQL and assert the policy says what you meant.
-Every authorization rule gets tested from both sides: the role that should see the
-row, and a role that should not.
-
-Three tests are structural rather than per-feature, and must exist before any table
-carries real data:
-
-- every table in `public` has `rowsecurity = true` (enumerate `pg_tables`)
-- every `SECURITY DEFINER` function pins a `search_path` (enumerate `pg_proc`)
-- an anonymous client, holding only the anon key, can read the public catalog and
-  nothing else
-
-`supabase db reset` between suites gives a fresh schema plus `seed.sql`; there is no
-per-test-class fixture helper to build.
+Every API test runs against a fresh schema per test class, seeded by a shared
+`TestData` helper built in M0-03.
 
 ---
 

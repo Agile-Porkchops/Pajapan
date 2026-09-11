@@ -7,107 +7,114 @@ item and have it listed in under a minute.
 nothing to order, ship, or report on. It is also the only screen used in a shop aisle
 on a phone, so it sets the mobile bar for the whole app.
 
-**Read first:** spec §4.1 (catalog), §4 conventions, §5.1 (trust boundary),
-§7.2 (view vs function vs direct write).
+**Read first:** spec §4.1 (catalog), §4 conventions, §5.1 (uploads).
 **Estimate:** 4–5 days · **7 tasks**
 
 ---
 
-> ## ⚠ Rewritten for the 2026-09-08 pivot — detail deliberately pending
->
-> These tasks were written as C# endpoints against EF Core. The **structural** notes
-> below say what each becomes under RLS/RPC. The detailed steps and SQL are *not*
-> written yet, on purpose: fifty tasks of confident, untested SQL is worse than none.
-> Write each task's detail when you start it, against the running local stack from
-> M0-08 — the same discipline that made M0 trustworthy.
->
-> Requirements and **Done when** items below still bind. Those are architecture-
-> neutral statements about behaviour, and most survived the pivot untouched.
+## M1-01 · Full schema migration
 
----
+**Depends on:** M0-03
+**Branch:** `feature/m1-schema`
 
-## Milestone-wide conventions established here
+> One migration for all remaining twelve entities. Doing the whole model at once —
+> rather than a table per milestone — means foreign keys are right the first time and
+> M4 never has to rewrite M2's tables.
 
-Three decisions land in M1 and every later milestone inherits them. They are the
-reason M1 is worth doing carefully rather than quickly.
+**Files:**
+- Create: `Domain/Catalog.cs`, `Domain/Ordering.cs`, `Domain/Money.cs`,
+  `Domain/Logistics.cs`; `Data/Configurations/*.cs` (one per entity)
+- Modify: `Data/AppDbContext.cs`
+- Test: `tests/Pajapan.Api.Tests/SchemaTests.cs`
 
-**1. Money crosses the wire as a string — and this now takes deliberate work.**
-PostgREST serialises `numeric` as a **JSON number**, so `price_php` arrives in
-JavaScript as a float64. The old design prevented this with a C# JSON converter;
-there is no equivalent hook now. Every view and every RPC return type therefore casts
-money to text:
+**Steps:**
 
-```sql
-SELECT p.price_php::text AS price_php, ...
+- [ ] **1.** Write every entity from spec §4.1–§4.7. Enums as `int`. Follow the file
+      grouping in [`README.md#repository-layout`](README.md#repository-layout).
+
+- [ ] **2.** Add `Order.IdempotencyKey` (`text`, nullable, **unique**) — spec §4.4,
+      required by M2-06.
+
+- [ ] **3.** Add `DeletedAt` (`timestamptz`, nullable) to `Order`, `OrderItem`,
+      `Payment`, `Refund`, `Expense`, `Shipment` — Global Constraint 7 — and a global
+      query filter so soft-deleted rows never appear by accident:
+
+```csharp
+b.Entity<Order>().HasQueryFilter(o => o.DeletedAt == null);
 ```
 
-Global Constraint 1 is unchanged; only the mechanism moved. Getting this wrong is
-silent — the numbers look right until one of them doesn't.
+- [ ] **4.** Indexes. These are not optional; they are the queries the app actually
+      runs every day:
 
-**2. Column-level permission needs a trigger, not a policy.** RLS is row-level. There
-is no way to write "JapanBuyer may update this row but not *this column*" as a
-policy, and Postgres column grants attach to database roles — every logged-in user
-here shares `authenticated`, so they cannot help. See M1-03.
+```csharp
+b.Entity<Order>().HasIndex(o => o.OrderCode).IsUnique();
+b.Entity<Order>().HasIndex(o => new { o.RunId, o.Status });      // shopping list
+b.Entity<Order>().HasIndex(o => new { o.CustomerId, o.PlacedAt });// my orders
+b.Entity<Order>().HasIndex(o => o.IdempotencyKey).IsUnique()
+    .HasFilter("idempotency_key is not null");
+b.Entity<Payment>().HasIndex(p => p.ReferenceNo).IsUnique()
+    .HasFilter("reference_no is not null");                       // spec §4.5
+b.Entity<OrderItem>().HasIndex(i => new { i.OrderId, i.LineStatus });
+b.Entity<Product>().HasIndex(p => p.Slug).IsUnique();
+b.Entity<Run>().HasIndex(r => r.Code).IsUnique();
+```
 
-**3. The client now chooses the storage path.** That was the server's job under the
-old design, for good reason. See M1-04 — this is the task whose risk went *up* in the
-pivot, and the only one that did.
+  > The unique index on `Payment.ReferenceNo` is a fraud control, not a tidiness
+  > measure: the same GCash reference submitted against two orders is either a
+  > mistake or someone reusing a screenshot. The database is the cheapest place to
+  > catch it, and the only place it cannot be bypassed.
 
----
+- [ ] **5.** Check constraints — invariants the application must not be trusted to
+      hold alone:
 
-## M1-01 · Full schema migration 🔴
+```csharp
+t.HasCheckConstraint("ck_orderitem_qty_positive", "qty > 0");
+t.HasCheckConstraint("ck_orderitem_fulfilled_le_qty", "qty_fulfilled <= qty");
+t.HasCheckConstraint("ck_payment_amount_positive", "amount_php > 0");
+t.HasCheckConstraint("ck_refund_amount_positive", "amount_php > 0");
+```
 
-**Depends on:** M0-09
-**Branch:** `feature/m1-schema`
-**Model:** Opus.
+- [ ] **6.** Seed `Courier` rows in the migration — see M5-01 for the templates.
 
-> One migration for all remaining twelve entities, **each with its RLS policies in the
-> same migration as its table** (plan README, repository layout). Doing the whole
-> model at once means foreign keys are right the first time and M4 never has to
-> rewrite M2's tables.
+- [ ] **7.** Generate the migration and **read the SQL**:
 
-**Becomes:** hand-written SQL in `supabase/migrations/`, not generated from entity
-classes. This is more work than `ef migrations add` and better: the RLS policies, the
-check constraints and the indexes are all first-class text you read and review,
-rather than output you inspect after the fact.
+```bash
+"/c/Program Files/dotnet/dotnet.exe" ef migrations add FullSchema -p src/Pajapan.Api
+"/c/Program Files/dotnet/dotnet.exe" ef migrations script -p src/Pajapan.Api > /tmp/schema.sql
+grep -nE "numeric|double|real" /tmp/schema.sql
+```
 
-**Carried over unchanged from the C# version** — all of this was database-level
-already and survives verbatim:
+- [ ] **8.** Schema tests — the guards on Global Constraints 1 and 5:
 
-- [ ] Every monetary column uses the `money_php` / `numeric(12,2)` domain from M0-09.
-      No bare `numeric`.
-- [ ] `order.idempotency_key` — text, nullable, **unique**. Required by M2-06.
-- [ ] `deleted_at timestamptz` on `order`, `order_item`, `payment`, `refund`,
-      `expense`, `shipment`. **The RLS policy excludes soft-deleted rows** — this
-      replaces EF's global query filter, and is stronger, because a caller cannot
-      opt out of it the way they could omit a `.is('deleted_at', null)` filter.
-- [ ] Indexes — these are the queries the app runs every day, not tidiness:
-      `order.order_code` unique; `(run_id, status)` for the shopping list;
-      `(customer_id, placed_at)` for "my orders"; `order.idempotency_key` unique
-      filtered on not-null; `payment.reference_no` unique filtered on not-null;
-      `(order_id, line_status)` on `order_item`; `product.slug` unique;
-      `run.code` unique.
-- [ ] Check constraints: `qty > 0`; `qty_fulfilled <= qty`; `payment.amount_php > 0`;
-      `refund.amount_php > 0`.
-- [ ] Seed `courier` rows in the migration — templates in M5-01.
+```csharp
+[Fact]
+public async Task All_money_columns_are_numeric_12_2()
+{
+    await using var db = _fx.NewContext();
+    var bad = await db.Database.SqlQuery<string>($"""
+        select table_name || '.' || column_name
+        from information_schema.columns
+        where table_schema = 'public'
+          and (column_name like '%_php' or column_name like '%_jpy')
+          and not (data_type = 'numeric'
+                   and numeric_precision = 12 and numeric_scale = 2)
+        """).ToListAsync();
+    Assert.Empty(bad);   // names the offending column if it fails
+}
 
-> The unique index on `payment.reference_no` is a fraud control, not a tidiness
-> measure: the same GCash reference submitted against two orders is either a mistake
-> or someone reusing a screenshot. The database is the cheapest place to catch it, and
-> now the only place — there is no application layer left to check it twice.
+[Fact]
+public async Task Duplicate_payment_reference_is_rejected() { /* expect DbUpdateException */ }
 
-**New, and the substance of this task:** an RLS policy set per table. Twelve tables ×
-four roles is where this milestone's risk actually lives. Work table by table and
-write the negative test for each before moving on.
+[Fact]
+public async Task Negative_payment_amount_is_rejected() { /* check constraint */ }
+```
 
 **Done when:**
-- [ ] No column anywhere is `double precision` or `real` — assert over
-      `information_schema.columns`, as the C# version did
-- [ ] Every money column is `numeric(12,2)` — the same query, ported
+- [ ] `grep -E "double precision|real" /tmp/schema.sql` returns nothing
+- [ ] The `All_money_columns_are_numeric_12_2` test passes
 - [ ] Inserting two payments with the same `reference_no` raises a unique violation
-- [ ] The M0-09 structural test still passes: no table added here has RLS off
-- [ ] For every table, a test proves a Customer cannot read another customer's rows
-- [ ] `supabase db reset` applies cleanly from empty, twice
+- [ ] `dotnet ef database update` then `dotnet ef migrations list` shows one pending
+      migration applied and no model drift
 
 ---
 
@@ -116,25 +123,36 @@ write the negative test for each before moving on.
 **Depends on:** M1-01
 **Branch:** `feature/m1-categories`
 
-**Becomes:** RLS policies, no endpoints. Public read (including anonymous); insert,
-update and delete restricted to Admin. §7.2 says direct table writes are correct
-here — categories are not money and an Admin owns all of them, so no function earns
-its keep.
+**Files:**
+- Create: `Features/Catalog/CategoryEndpoints.cs`, `Features/Catalog/CategoryDtos.cs`
 
-**Requirements:**
+**Steps:**
 
-- [ ] Slug generated from the name, lowercased, non-alphanumerics collapsed to `-`,
-      `-2`/`-3` on collision. Slug is **immutable after creation** — a changing slug
-      breaks every saved link. Enforce immutability with a trigger, not a convention.
-- [ ] Deleting a category that still has products must fail. Under the old design this
-      was a hand-written `409 Conflict`; here it is `ON DELETE RESTRICT` on the foreign
-      key — the database refuses, and it cannot be forgotten or bypassed. It does not
-      cascade and it does not silently reassign.
+- [ ] **1.** Endpoints. Read is public; writes are `Admin` only:
+
+```
+GET    /api/categories                    anonymous
+POST   /api/admin/categories              Admin
+PUT    /api/admin/categories/{id}         Admin
+DELETE /api/admin/categories/{id}         Admin — 409 if any product references it
+```
+
+- [ ] **2.** Slug generated from the name, lowercased, non-alphanumerics collapsed to
+      `-`. On collision append `-2`, `-3`. Slug is immutable after creation — a
+      changing slug breaks every link a customer has saved.
+
+- [ ] **3.** Delete returns `409 Conflict` with a ProblemDetails naming the count of
+      products still in the category. It does not cascade, and it does not silently
+      reassign them.
+
+- [ ] **4.** Two tests: the 409-on-in-use path, and `Customer` role receiving 403 on
+      `POST /api/admin/categories`.
+
+- [ ] **5.** Commit.
 
 **Done when:**
-- [ ] Deleting a category with products fails and the products still exist
-- [ ] A Customer's client cannot insert, update or delete a category
-- [ ] An anonymous client can read the category list
+- [ ] Deleting a category with products returns 409 and the products still exist
+- [ ] A `Customer` token gets 403 on every `/api/admin/categories` verb
 
 ---
 
@@ -143,113 +161,161 @@ its keep.
 **Depends on:** M1-02
 **Branch:** `feature/m1-products`
 
-**Becomes:** RLS policies for read and write, **plus a trigger** for the price rule.
+**Files:**
+- Create: `Features/Catalog/ProductEndpoints.cs`, `ProductDtos.cs`,
+  `ProductValidators.cs`
+- Test: `tests/Pajapan.Api.Tests/ProductTests.cs`
 
-> **The structural problem in this task.** Spec §6 says JapanBuyer may create a product
-> and set `ref_price_jpy`, but only Admin may set `price_php` — the customer-facing
-> price. That is a *column*-level rule, and RLS is row-level. A policy can say "you may
-> update this row"; it cannot say "you may update this row except that column".
-> Postgres column grants exist but attach to a database role, and every signed-in user
-> shares `authenticated`.
->
-> The answer is a `BEFORE UPDATE` trigger that raises if `price_php` changed and
-> `current_app_role()` is not Admin. Write the negative test first: it is the kind of
-> rule that looks enforced because the UI hides the field.
+**Interfaces produced:** `ProductDto { id, name, slug, description, categoryId,
+pricePhp: string, refPriceJpy: string, estWeightGrams, sourceStore, isActive,
+photos: [{ id, url, sortOrder }] }`.
 
-**Requirements:**
+**Steps:**
 
-- [ ] Read: active, non-custom products readable by anyone including anonymous. Staff
-      read all, including inactive and custom.
-- [ ] Write: JapanBuyer and Admin may insert and update. Price rule per the trigger
-      above.
-- [ ] Validation moves to check constraints — name 1–200 chars, `price_php > 0`,
-      `ref_price_jpy >= 0`, `est_weight_grams` 1–50000. `category_id` is an FK, which
-      already enforces existence.
-- [ ] Money as text in every view — the milestone convention above.
-- [ ] Search: `name ILIKE '%' || q || '%'`, expressible directly as a PostgREST
-      `.ilike()` filter. Trigram index only past ~2,000 rows (spec §11).
-- [ ] Photo read URLs are **signed, 1-hour expiry**, generated from `storage_path` at
-      read time — the bucket is private. Never a bare public URL. The client can call
-      `createSignedUrl` itself now; the storage policy is what decides if it may.
-- [ ] A product referenced by any `order_item` cannot be hard-deleted — FK restrict.
+- [ ] **1.** Endpoints:
+
+```
+GET    /api/admin/products?q=&categoryId=&isActive=&page=   Staff
+GET    /api/admin/products/{id}                             Staff
+POST   /api/admin/products                                  JapanBuyer | Admin
+PUT    /api/admin/products/{id}                             JapanBuyer | Admin
+POST   /api/admin/products/{id}/photos                      JapanBuyer | Admin
+DELETE /api/admin/products/{id}/photos/{photoId}            JapanBuyer | Admin
+PUT    /api/admin/products/{id}/photos/order                JapanBuyer | Admin
+```
+
+- [ ] **2.** `PricePhp` is settable by `Admin` only. `JapanBuyer` may create a product
+      and set `RefPriceJpy`, but a `JapanBuyer` PUT that changes `PricePhp` returns
+      403. Pricing is an Admin decision (spec §6).
+
+- [ ] **3.** Validation: name 1–200 chars; `PricePhp > 0`; `RefPriceJpy >= 0`;
+      `EstWeightGrams` 1–50000; `CategoryId` must exist.
+
+- [ ] **4.** Money crosses the wire as a **string**. Configure
+      `JsonSerializerOptions` with a converter writing `decimal` as a quoted string,
+      so a JavaScript client cannot silently receive a float. Round-trip test it.
+
+- [ ] **5.** Search: `where p.Name ILIKE '%' || @q || '%'`. Add a trigram index if the
+      catalog passes ~2,000 rows — not before (spec §11).
+
+- [ ] **6.** Photo URLs in responses are **signed read URLs** with a 1-hour expiry,
+      generated at read time from `StoragePath` (the bucket is private). Never a bare
+      public URL.
+
+- [ ] **7.** Tests: JapanBuyer-cannot-set-price (403); price serialises as a string
+      and parses back to the same decimal; deleting a product with orders is refused.
+
+- [ ] **8.** Commit.
 
 **Done when:**
-- [ ] A product read returns `"price_php": "1250.00"` — quoted string, two decimals
-- [ ] A JapanBuyer's own client updating `price_php` is **rejected by the database**,
-      and the stored value is unchanged — verified from a signed-in client, not the UI
-- [ ] A JapanBuyer *can* still update `ref_price_jpy` on the same row
-- [ ] A product referenced by an `order_item` cannot be deleted
+- [ ] `curl` on a product shows `"pricePhp": "1250.00"` — quoted, two decimals
+- [ ] A JapanBuyer token changing `pricePhp` gets 403 and the value is unchanged in
+      the database
+- [ ] A product referenced by any `OrderItem` cannot be hard-deleted
 
 ---
 
-## M1-04 · Storage upload policies
+## M1-04 · Signed upload URLs
 
-**Depends on:** M0-09
+**Depends on:** M0-04
 **Branch:** `feature/m1-uploads`
 
-> **This is the one task whose risk went up in the pivot.** Read the old rationale
-> before writing the new policy.
->
-> The C# design's rule was: *the client never chooses the path*. The server generated
-> `<purpose>/<yyyy>/<MM>/<guid><ext>`, because a client-supplied path is a directory
-> traversal and an overwrite-someone-else's-file bug in one. There is no server now —
-> the browser calls `createSignedUploadUrl(path)` and picks the path itself.
->
-> The protection has to move into the storage policy, which can constrain the path by
-> prefix. A payment proof must land under the uploader's own uid; a product photo must
-> land in the product-photos bucket and only for JapanBuyer/Admin. **A storage bucket
-> with a policy of "authenticated users may insert" is an
-> overwrite-anyone's-file bug**, and it is the default shape people reach for.
+> The one place the API hands out write access to Storage. Spec §5.1: the server
+> decides who may upload and where; the bytes never pass through it.
 
-**Requirements:**
+**Files:**
+- Create: `Infrastructure/SupabaseStorage.cs`, `Features/Uploads/UploadEndpoints.cs`
+- Test: `tests/Pajapan.Api.Tests/UploadTests.cs`
 
-- [ ] One bucket per purpose, all private, each with its own insert policy:
+**Steps:**
 
-| bucket | who may insert | path must be under |
-|---|---|---|
-| `product-photos` | JapanBuyer, Admin | `product-photos/` |
-| `payment-proofs` | Customer (own), Fulfilment, Admin | `<auth.uid()>/` |
-| `receipts` | JapanBuyer, Fulfilment, Admin | `receipts/` |
-| `custom-requests` | Customer | `<auth.uid()>/` |
+- [ ] **1.** `POST /api/uploads/sign`, authenticated:
 
-- [ ] Insert policies must also **forbid overwriting an existing object**, not only
-      constrain where new ones go
-- [ ] Allowlist content types at the bucket level: `image/jpeg`, `image/png`,
-      `image/webp`. **Reject `image/svg+xml`** — SVG is a script execution vector when
-      served inline. This was right in the C# design and is unchanged.
-- [ ] 5 MB per object
+```jsonc
+// request
+{ "purpose": "product-photo", "contentType": "image/webp" }
+// response
+{ "uploadUrl": "https://…", "storagePath": "product-photos/2026/08/<uuid>.webp",
+  "expiresInSeconds": 300 }
+```
+
+- [ ] **2.** **The client never chooses the path.** The server generates
+      `<purpose>/<yyyy>/<MM>/<guid><ext>`. A client-supplied path is a directory
+      traversal and an overwrite-someone-else's-file bug in one.
+
+- [ ] **3.** Allowlist `purpose` → (bucket, permitted roles, max bytes):
+
+| purpose | bucket | roles | max |
+|---|---|---|---|
+| `product-photo` | `product-photos` | JapanBuyer, Admin | 5 MB |
+| `payment-proof` | `payment-proofs` | Customer (own order), Fulfilment, Admin | 5 MB |
+| `receipt` | `receipts` | JapanBuyer, Fulfilment, Admin | 5 MB |
+| `custom-request` | `custom-requests` | Customer | 5 MB |
+
+  An unknown `purpose` is `400`, never a default bucket.
+
+- [ ] **4.** Allowlist content types: `image/jpeg`, `image/png`, `image/webp`. Reject
+      `image/svg+xml` — SVG is a script execution vector when served inline.
+
+- [ ] **5.** Sign with `createSignedUploadUrl` via the service key, 5-minute expiry.
+      The service key is read from configuration and never logged.
+
+- [ ] **6.** Tests: unknown purpose → 400; `image/svg+xml` → 400; Customer requesting
+      `product-photo` → 403; a client-supplied `storagePath` in the body is ignored.
+
+- [ ] **7.** Commit.
 
 **Done when:**
-- [ ] Customer A cannot write into Customer B's payment-proof prefix — attempted from
-      a real signed-in client
-- [ ] A Customer cannot write to `product-photos` at all
-- [ ] Uploading to a path that already exists fails
-- [ ] `image/svg+xml` is rejected by the bucket, not by the UI
+- [ ] Posting `{"purpose":"product-photo","storagePath":"../../evil.svg"}` returns a
+      server-generated path and ignores the supplied one
+- [ ] `image/svg+xml` is rejected
+- [ ] The service key appears in no log line — check with the API at Debug level
 
 ---
 
 ## M1-05 · Admin product list
 
-**Depends on:** M1-03, M0-10
+**Depends on:** M1-03, M0-06
 **Branch:** `feature/m1-product-list`
 
-**Becomes:** unchanged as a screen; `useProducts` calls `supabase.from('product')`
-instead of `apiClient`. The one thing that must not be lost:
+**Files:**
+- Create: `web/src/features/admin/products/ProductListPage.tsx`,
+  `useProducts.ts`, `web/src/components/DataState.tsx`
 
-- [ ] Build `DataState` **once**, here, and use it on every list in the app: pending →
-      skeleton, error → panel with retry, empty → empty state, else render. It is the
-      mechanical enforcement of Global Constraint 9, and it matters *more* now — with
-      `supabase-js` returning `{ data, error }` rather than throwing, an unchecked
-      error becomes an empty table by default rather than by mistake. Pair it with the
-      throwing helper from M0-10.
+**Steps:**
 
-**Requirements:** table of thumbnail, name, category, `price_php`, `ref_price_jpy`,
-active toggle, edit link; debounced search; category and active filters; cards below
-768 px; optimistic active-toggle with rollback **and a toast** on failure.
+- [ ] **1.** Build `DataState` **once**, here, and use it on every list in the app.
+      It is the mechanical enforcement of Global Constraint 9:
+
+```tsx
+export function DataState<T>({ query, empty, children }: {
+  query: UseQueryResult<T>; empty: React.ReactNode; children: (d: T) => React.ReactNode;
+}) {
+  if (query.isPending) return <Skeleton />;
+  if (query.isError)   return <ErrorPanel error={query.error} onRetry={query.refetch} />;
+  if (isEmpty(query.data)) return <>{empty}</>;
+  return <>{children(query.data!)}</>;
+}
+```
+
+  > Every list screen in M2–M6 uses this. A screen that renders an empty table when
+  > the API is down is the failure mode the spec calls out by name; making the correct
+  > thing the easiest thing is how you avoid it fifty times over.
+
+- [ ] **2.** Table: thumbnail, name, category, `PricePhp`, `RefPriceJpy`, active
+      toggle, edit link. Search box (debounced 300 ms), category filter, active filter.
+
+- [ ] **3.** Mobile: below 768 px the table becomes cards. This screen gets used on a
+      phone.
+
+- [ ] **4.** Active toggle is optimistic with rollback on error — and the rollback
+      must show a toast, not fail silently.
+
+- [ ] **5.** Commit.
 
 **Done when:**
-- [ ] With the local Supabase stack stopped, the page shows an error panel with a
-      working Retry — not an empty table
+- [ ] With the API stopped, the page shows an error panel with a working Retry — not
+      an empty table
 - [ ] Renders correctly at 390 px, 1024 px and 1440 px
 - [ ] A failed toggle reverts the switch **and** shows an error toast
 
@@ -263,31 +329,52 @@ active toggle, edit link; debounced search; category and active filters; cards b
 > The most-used screen in the app, operated one-handed in a shop aisle on Japanese
 > mobile data. Optimise for that, not for the desktop case.
 
-**Becomes:** the upload flow loses a round trip. Previously: sign via the API → PUT →
-register the photo row via the API. Now: `createSignedUploadUrl` → PUT → insert the
-`product_photo` row directly under RLS. Everything else about this screen is
-unchanged.
+**Files:**
+- Create: `web/src/features/admin/products/ProductFormPage.tsx`,
+  `PhotoUploader.tsx`, `useUpload.ts`
 
-**Requirements** — all carried over, none affected by the pivot:
+**Steps:**
 
-- [ ] Zod schema mirroring M1-03's constraints. Client validation is UX; the database
-      is the gate.
-- [ ] Field order as a person in a shop fills them: **photos first**, then name, JPY
-      price, category, source store, weight, PHP price (Admin only), description,
-      active.
-- [ ] `<input type="file" accept="image/*" capture="environment" multiple>` — the
-      native camera, no library.
-- [ ] **Resize client-side before upload.** The single biggest usability win: a 4 MB
-      phone photo on Japanese mobile data is a 30-second wait; 1600 px WebP is under
-      300 KB. `createImageBitmap` → `OffscreenCanvas` → `convertToBlob({ type:
-      "image/webp", quality: 0.82 })`.
-- [ ] Per-photo progress and per-photo retry. One failed photo must not lose the other
-      four or the typed form.
-- [ ] Drag-to-reorder, first photo is the thumbnail. Native HTML5 drag events — no dnd
-      library for a list of five.
-- [ ] Warn on navigate-away with unsaved changes.
-- [ ] `source_store` is a datalist of previously used values — typed once, not forty
-      times.
+- [ ] **1.** Zod schema mirroring M1-03's validation, wired via
+      `@hookform/resolvers/zod`. Client validation is UX; the server is the gate.
+
+- [ ] **2.** Fields in the order a person in a shop fills them: **photos first**, then
+      name, JPY price, category, source store, weight, PHP price (Admin only),
+      description, active.
+
+- [ ] **3.** `PhotoUploader`:
+      `<input type="file" accept="image/*" capture="environment" multiple>` — the
+      native camera, no library. Ladder rung 4.
+
+- [ ] **4.** Resize client-side before upload — the single biggest win for shop-floor
+      usability. A 4 MB phone photo on Japanese mobile data is a 30-second wait; 1600
+      px WebP is under 300 KB:
+
+```ts
+async function shrink(file: File): Promise<Blob> {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+  const canvas = new OffscreenCanvas(bmp.width * scale, bmp.height * scale);
+  canvas.getContext("2d")!.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  return canvas.convertToBlob({ type: "image/webp", quality: 0.82 });
+}
+```
+
+- [ ] **5.** Upload flow per photo: `POST /api/uploads/sign` → `PUT` the blob to the
+      signed URL → `POST /api/admin/products/{id}/photos` with the returned
+      `storagePath`. Show a per-photo progress bar and a per-photo retry. One failed
+      photo must not lose the other four or the typed form.
+
+- [ ] **6.** Drag-to-reorder photos; the first is the thumbnail. Use the native
+      HTML5 drag events — no dnd library for a list of five.
+
+- [ ] **7.** Warn on navigate-away with unsaved changes (`beforeunload` + a router
+      blocker).
+
+- [ ] **8.** `source_store` is a datalist of previously used values — the buyer types
+      "Don Quijote Shinjuku" once, not forty times.
+
+- [ ] **9.** Commit.
 
 **Done when:**
 - [ ] On a real phone, throttled to Slow 4G, a product with 3 photos is created in
@@ -303,25 +390,30 @@ unchanged.
 **Depends on:** M1-06
 **Branch:** `feature/m1-seed`
 
-**Becomes:** the dev seed folds into `supabase/seed.sql` from M0-08 — one seed
-mechanism, not two. The guard that mattered survives in a stronger form: `seed.sql`
-runs via `supabase db reset` against the **local** stack and has no way to address a
-remote project, where the old PowerShell script had to refuse a production connection
-string by inspection.
+**Files:**
+- Create: `scripts/seed-dev.ps1`, `Features/Catalog/PhotoCleanup.cs`
 
-**Requirements:**
+**Steps:**
 
-- [ ] Extend `supabase/seed.sql`: 3 categories, 15 products, no photos
-- [ ] Deleting a `product_photo` row must delete the Storage object; deleting a
-      `product` must delete all of its objects. Otherwise the bucket grows forever with
-      files nothing references and nobody can tell which. A trigger is the natural home
-      for this now.
-- [ ] An orphan report — Storage objects with no `product_photo` row — as an
-      Admin-only function, run occasionally by hand. Not a scheduled job (spec §11).
+- [ ] **1.** `seed-dev.ps1`: 3 categories, 15 products, no photos. **Staging and local
+      only** — it must refuse to run against a connection string it did not read from
+      `appsettings.Local.json`.
+
+- [ ] **2.** Deleting a `ProductPhoto` row must also delete the Storage object.
+      Deleting a `Product` deletes all of its objects. Otherwise the bucket grows
+      forever with files nothing references and no one can tell which.
+
+- [ ] **3.** `GET /api/admin/photos/orphans` (Admin): Storage objects with no
+      `ProductPhoto` row. A cleanup you run occasionally by hand — not a scheduled
+      job (spec §11, no job runner).
+
+- [ ] **4.** Test: deleting a product removes its Storage objects.
+
+- [ ] **5.** Commit.
 
 **Done when:**
 - [ ] After deleting a seeded product, its objects are gone from the bucket
-- [ ] `supabase db reset` gives the same catalog every time
+- [ ] `seed-dev.ps1` refuses to run against the production connection string
 
 ---
 
@@ -329,8 +421,5 @@ string by inspection.
 
 - [ ] The Japan buyer has created 10 real products with real photos on staging, from
       a phone
-- [ ] Every money column is `numeric(12,2)`, and every money field arrives in the
-      browser as a **string** — both proven by test
-- [ ] Every list screen uses `DataState` and shows a real error when the database is
-      unreachable
-- [ ] Every table added in M1-01 has RLS enabled and a negative test proving isolation
+- [ ] Every money column is `numeric(12,2)` — the schema test proves it
+- [ ] Every list screen uses `DataState` and shows a real error when the API is down

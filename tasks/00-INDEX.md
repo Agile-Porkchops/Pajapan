@@ -16,29 +16,11 @@ hand-edit an issue body.
 
 ---
 
-> ## ⚠ Architecture pivoted 2026-09-08
->
-> Pajapan dropped the custom C# Minimal API for **Supabase-native** access: RLS
-> policies plus Postgres `SECURITY DEFINER` functions, no backend server. See
-> [`docs/plan/README.md`](../docs/plan/README.md) and spec §5.
->
-> **M0-03 and M0-04 are superseded** and their issues stay closed. M0-01, M0-02, M0-06
-> and M0-07 are partly reworked. **M0-08, M0-09 and M0-10 are new.**
->
-> **M1–M7 have had their structural notes rewritten, not their detailed steps.** Each
-> plan file says what its tasks become under RLS/RPC and what the requirements are; the
-> step-by-step SQL is written milestone-by-milestone, at implementation time, against a
-> running database. Fifty tasks of confident untested SQL was rejected as worse than
-> none. **Expect to write the detail as you start each task** — that is the plan, not a
-> gap in it.
-
----
-
 ## Progress
 
 | Milestone | Tasks | Est. | Status |
 |---|---|---|---|
-| [M0 — Foundations](../docs/plan/M0-foundations.md) | 10 | 3–4d | 🟨 In progress — 4 done, 2 superseded, 1 rework, 3 new |
+| [M0 — Foundations](../docs/plan/M0-foundations.md) | 7 | 3–4d | ⬜ Not started |
 | [M1 — Catalog](../docs/plan/M1-catalog.md) | 7 | 4–5d | ⬜ Not started |
 | [M2 — Storefront & orders](../docs/plan/M2-storefront-orders.md) | 9 | 5–6d | ⬜ Not started |
 | [M3 — Payments](../docs/plan/M3-payments.md) | 6 | 3–4d | ⬜ Not started |
@@ -46,7 +28,7 @@ hand-edit an issue body.
 | [M5 — Shipping](../docs/plan/M5-shipping.md) | 6 | 4–5d | ⬜ Not started |
 | [M6 — Finance](../docs/plan/M6-finance.md) | 6 | 4–5d | ⬜ Not started |
 | [M7 — Hardening & launch](../docs/plan/M7-hardening.md) | 8 | 4–5d | ⬜ Not started |
-| **Total** | **60** | **~33–40d** | |
+| **Total** | **57** | **~33–40d** | |
 
 ---
 
@@ -55,66 +37,58 @@ hand-edit an issue body.
 Following the workspace convention in `../../CLAUDE.md`.
 
 **Opus 5 — judgment, security, and anything where being plausibly wrong is expensive.**
-These eleven are where a cheaper model wires something up plausibly and wrongly, and
+These ten are where a cheaper model wires something up plausibly and wrongly, and
 where the error is silent:
 
 | Task | Why |
 |---|---|
-| M0-09 · RLS foundation | Replaces M0-04 as the milestone's riskiest. Every later policy copies this pattern, including the recursion and `search_path` traps. |
-| M1-01 · Full schema + RLS | Money precision, unique indexes, check constraints, **and twelve tables' policies**. Wrong here is wrong in every report forever. |
-| M2-06 · Place order | Server-side pricing, idempotency under concurrency, address snapshotting. The money path. |
-| M3-03 · Verification queue | Decides when money counts. Double-verify must not double-count. |
+| M0-04 · JWT validation | Every authorization rule rests on it. An audience check omitted here is invisible until it is exploited. |
+| M1-01 · Full schema | Money precision, unique indexes, check constraints. Wrong here is wrong in every report forever. |
+| M2-06 · Place order | Server-side pricing, idempotency under concurrency, address snapshotting. The money endpoint. |
+| M3-03 · Verification queue API | Decides when money counts. Double-verify must not double-count. |
 | M3-06 · Reconciliation | The check that makes the denormalised cache safe. |
-| M4-05 · Mark lines | Captures `actual_cost_jpy`. Silently defaulting it to zero flatters every margin report. |
+| M4-05 · Mark lines | Captures `ActualCostJpy`. Silently defaulting it to zero flatters every margin report. |
 | M4-06 · Refunds | Money out. Over-refund guard. |
 | M6-02 · Run P&L | The number the business acts on. An invisible FX rate makes it unauditable. |
-| M6-05 · Freight allocation | Rounding remainder distribution. A centavo leak nobody finds — and the rounding mode differs from the C# original. |
-| M7-01 · Security pass | The whole point is adversarial thinking, against a boundary that is now entirely in the database. |
-| M7-07 · Dry run | Parity judgment on real money. |
+| M6-05 · Freight allocation | Rounding remainder distribution. A centavo leak nobody finds. |
+| M7-01 · Security pass | The whole point is adversarial thinking. |
 
 **Sonnet 5 — transcription and assembly against a written spec.** Everything else: the
-UI screens, the RLS policies that follow M1-01's established pattern, the responsive and
-PWA work. Use `/effort low` or `medium`.
-
-> **One caveat the pivot adds.** The plan files no longer carry copy-this-verbatim code
-> for the database tasks — that was the thing making them safe for a cheaper model. A
-> task marked Sonnet that turns out to need *designed* SQL rather than
-> pattern-following SQL should be escalated. The `Done when` lists are the detector.
+UI screens, CRUD endpoints, the responsive and PWA work. The plan files specify these
+in enough detail that inference is not required. Use `/effort low` or `medium`.
 
 **Do not use Haiku 4.5** on M1-01, M2-06 or M6-02 — those need the spec and several
-files in context at once.
+source files in context at once.
 
 ---
 
 ## Task list
 
-Legend: 🔴 high-risk (Opus, review carefully) · ✓ done · ✗ superseded · ◐ rework ·
-⬜ not started
+Legend: 🔴 high-risk (Opus, review carefully) · ⬜ not started
 
 ### M0 — Foundations
 
-| # | Task | Depends on | Risk | Status |
-|---|---|---|---|---|
-| M0-01 | Repository scaffolding | — | | ◐ .NET parts retired |
-| M0-02 | Supabase project and configuration | M0-01 | | ◐ config shape changed |
-| M0-03 | EF Core, DbContext, first migration | M0-02 | | ✗ superseded by M0-08/09 |
-| M0-04 | JWT validation and CurrentUser | M0-03 | 🔴 | ✗ superseded — `supabase-js` |
-| M0-05 | React application scaffold | M0-01 | | ✓ minus `apiClient.ts` |
-| M0-06 | Login end to end | M0-05 | | ◐ its no-`.from()` guard is now backwards |
-| M0-07 | CI and deployment | M0-06 | | ◐ CI merged, deploy re-scoped |
-| M0-08 | Supabase CLI and local stack | M0-02 | | ⬜ new |
-| M0-09 | RLS foundation and structural guards | M0-08 | 🔴 | ⬜ new |
-| M0-10 | Rewire web to Supabase-native | M0-09 | | ⬜ new |
+| # | Task | Depends on | Risk |
+|---|---|---|---|
+| M0-01 | Repository scaffolding | — | |
+| M0-02 | Supabase project and configuration | M0-01 | |
+| M0-03 | EF Core, DbContext, first migration | M0-02 | |
+| M0-04 | JWT validation and CurrentUser | M0-03 | 🔴 |
+| M0-05 | React application scaffold | M0-01 | |
+| M0-06 | Login end to end | M0-04, M0-05 | |
+| M0-07 | CI and deployment | M0-06 | |
+
+M0-05 runs in parallel with M0-03/M0-04.
 
 ### M1 — Catalog and admin entry
 
 | # | Task | Depends on | Risk |
 |---|---|---|---|
-| M1-01 | Full schema migration | M0-09 | 🔴 |
+| M1-01 | Full schema migration | M0-03 | 🔴 |
 | M1-02 | Category CRUD | M1-01 | |
 | M1-03 | Product CRUD | M1-02 | |
-| M1-04 | Storage upload policies | M0-09 | |
-| M1-05 | Admin product list | M1-03, M0-10 | |
+| M1-04 | Signed upload URLs | M0-04 | |
+| M1-05 | Admin product list | M1-03, M0-06 | |
 | M1-06 | Admin product form | M1-05, M1-04 | |
 | M1-07 | Catalog seed and photo integrity | M1-06 | |
 
@@ -122,11 +96,11 @@ Legend: 🔴 high-risk (Opus, review carefully) · ✓ done · ✗ superseded ·
 
 | # | Task | Depends on | Risk |
 |---|---|---|---|
-| M2-01 | Public catalog view | M1-03 | |
+| M2-01 | Public catalog API | M1-03 | |
 | M2-02 | Catalog browse UI | M2-01 | |
 | M2-03 | Product detail | M2-02 | |
 | M2-04 | Cart | M2-03 | |
-| M2-05 | Addresses | M1-01, M0-10 | |
+| M2-05 | Addresses | M1-01, M0-06 | |
 | M2-06 | Place order | M2-04, M2-05 | 🔴 |
 | M2-07 | Checkout UI | M2-06 | |
 | M2-08 | Customer order list and detail | M2-06 | |
@@ -138,7 +112,7 @@ Legend: 🔴 high-risk (Opus, review carefully) · ✓ done · ✗ superseded ·
 |---|---|---|---|
 | M3-01 | Submit payment proof | M2-06, M1-04 | |
 | M3-02 | Payment instructions UI | M3-01 | |
-| M3-03 | Verification queue | M3-01 | 🔴 |
+| M3-03 | Verification queue API | M3-01 | 🔴 |
 | M3-04 | Verification queue UI | M3-03 | |
 | M3-05 | Balance and partial payments | M3-03 | |
 | M3-06 | Reconciliation check | M3-05 | 🔴 |
@@ -147,21 +121,21 @@ Legend: 🔴 high-risk (Opus, review carefully) · ✓ done · ✗ superseded ·
 
 | # | Task | Depends on | Risk |
 |---|---|---|---|
-| M4-01 | Run lifecycle | M1-01 | |
+| M4-01 | Run lifecycle API | M1-01 | |
 | M4-02 | Run admin UI | M4-01 | |
-| M4-03 | Shopping list function | M4-01, M3-03 | |
+| M4-03 | Shopping list API | M4-01, M3-03 | |
 | M4-04 | Shopping list UI | M4-03 | |
 | M4-05 | Mark lines bought or unavailable | M4-04 | 🔴 |
 | M4-06 | Refunds | M4-05, M3-03 | 🔴 |
 | M4-07 | Expense capture | M1-01 | |
-| M4-08 | Run cutoff enforcement and notices | M4-02, M4-06 | |
+| M4-08 | Run cutoff automation and notices | M4-02, M4-06 | |
 
 ### M5 — Shipping and tracking
 
 | # | Task | Depends on | Risk |
 |---|---|---|---|
 | M5-01 | Couriers | M1-01 | |
-| M5-02 | Shipments | M5-01, M4-05 | |
+| M5-02 | Shipments API | M5-01, M4-05 | |
 | M5-03 | Packing UI | M5-02 | |
 | M5-04 | Tracking entry | M5-03 | |
 | M5-05 | Customer tracking view | M5-04 | |
@@ -188,7 +162,7 @@ Legend: 🔴 high-risk (Opus, review carefully) · ✓ done · ✗ superseded ·
 | M7-04 | Accessibility pass | M7-03 | |
 | M7-05 | PWA and offline behaviour | M7-03 | |
 | M7-06 | Backups and restore drill | M0-07 | |
-| M7-07 | Dry run on real data | M7-01…M7-06 | 🔴 |
+| M7-07 | Dry run on real data | M7-01…M7-06 | |
 | M7-08 | Launch | M7-07 | |
 
 ---

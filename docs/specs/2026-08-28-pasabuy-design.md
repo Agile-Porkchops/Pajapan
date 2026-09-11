@@ -5,18 +5,6 @@
 **Repo:** `pajapan` (greenfield, nothing built yet)
 **Reviewer:** please read §14 first — it lists the specific things I want challenged.
 
-> **2026-09-08 architecture pivot.** The custom C# Minimal API is retired in
-> favour of Supabase-native access — RLS plus Postgres `SECURITY DEFINER`
-> functions, no backend server. Rewritten in place: **§5** (architecture, trust
-> boundary, stack, hosting), **§6.1** (authorization rules), **§7** (now the
-> data-access surface, not an API), and the enforcement details in §8, §10 and
-> §11. **§16** records two requirements that surfaced during the replan and have
-> no design yet.
->
-> **What did not change:** the domain model in §3–§4, the four roles and what
-> each may do in §6, and every correctness rule in §10. Only *where* they are
-> enforced moved — from application code into the database.
-
 ---
 
 ## 1. What this is
@@ -59,7 +47,7 @@ questions.
 | Pricing | **Locked PHP price**; the team absorbs FX and store-price drift | Buyer never gets a surprise bill. Margin is discovered after the fact. |
 | Shipping | **Consolidate into a batch**, one international leg, then a PH courier for last mile | Two shipment legs per order |
 | Accounts | **Required** for buyers (Supabase Auth) | Buyers self-serve order status; less DM support load |
-| Stack | React frontend, Supabase (Postgres/Auth/Storage/Realtime), no backend server | Pivoted 2026-09-08 from a C# API — see §5 |
+| Stack | React frontend, C# backend, Supabase Postgres via EF Core | As specified by the project owner |
 
 ---
 
@@ -197,10 +185,9 @@ in stock.
 
 > Role lives in a table rather than in the JWT's `app_metadata` so an admin can
 > change someone's role from inside the app without touching Supabase's admin
-> API, and without waiting for a token to expire. **RLS policies read it per
-> row**, so it must be a `STABLE` helper function over an indexed lookup —
-> Postgres caches a `STABLE` call within a statement, which is what keeps a
-> per-row role check from becoming a per-row query.
+> API, and without waiting for a token to expire. The API reads it per request;
+> it is a single indexed lookup and can be cached later if it ever shows up in a
+> profile.
 
 **`Address`** — a customer's saved delivery addresses.
 
@@ -415,58 +402,41 @@ beyond what the public page shows. See §11.
 ## 5. Architecture
 
 ```
-┌─────────────────────┐   supabase-js (anon key)   ┌───────────────────────────┐
-│  React (Vite, TS)   │ ─────────────────────────▶ │  Supabase                 │
-│  SPA, PWA           │ ◀───────────────────────── │  ┌─────────────────────┐  │
-└──────────────────────┘   PostgREST, RLS-filtered │  │ Postgres + RLS      │  │
-                                                     │  │  tables (reads)     │  │
-                                                     │  │  SECURITY DEFINER   │  │
-                                                     │  │  functions (writes) │  │
-                                                     │  └─────────────────────┘  │
-                                                     │  Auth (JWT issuance)      │
-                                                     │  Storage (RLS buckets)    │
-                                                     │  Realtime (chat)          │
-                                                     │  Edge Functions           │
-                                                     │   (future payment webhook)│
-                                                     └───────────────────────────┘
+┌────────────────────┐        HTTPS + JWT        ┌──────────────────────────┐
+│  React (Vite, TS)  │ ────────────────────────▶ │  ASP.NET Core 10         │
+│  SPA, PWA          │ ◀──────────────────────── │  Minimal APIs            │
+└────────┬───────────┘                           └───────┬──────────┬───────┘
+         │                                               │ EF Core  │
+         │ login only                                    ▼          │
+         │                                    ┌────────────────────┐│
+         └───────────────────────────────────▶│ Supabase Postgres  ││
+                    Supabase Auth             └────────────────────┘│
+                    (returns JWT)                                   │
+                                                 signed upload URLs │
+                                              ┌─────────────────────▼──┐
+         browser PUTs bytes directly ────────▶│  Supabase Storage      │
+                                              └────────────────────────┘
 ```
 
 ### 5.1 The trust-boundary decision
 
-**There is no backend server. The React app talks directly to Supabase via
-`supabase-js`, using only the public anon key. Row-Level Security is the
-authorization boundary.**
-
-This reverses the original decision (below is what it now says instead of a
-single API enforcing everything) — see the note at the top of this document
-for why.
+**The React app talks only to the C# API. It never queries Supabase Postgres
+directly with the JS client.**
 
 Consequences, stated plainly because this is the decision most worth
 challenging:
 
-- **The database enforces authorization**, not application code. Every table a
-  browser can query has RLS policies keyed off `auth.uid()` and a role lookup
-  against `AppUser`. There is no second layer that could drift out of sync with
-  a hand-written authorization check, because there is no other layer.
-- **Reads** (catalog, own orders, own addresses, the buying-list view, admin
-  reports) are plain `supabase-js` `.from(...).select(...)` calls. RLS decides
-  what rows come back; there is no endpoint to forget to scope.
-- **Money-critical writes** (place order, verify payment, issue refund, mark a
-  buying-list line, allocate freight) go through Postgres `SECURITY DEFINER`
-  RPC functions, called via `.rpc(...)`. A client can never `INSERT`/`UPDATE`
-  these tables directly — RLS grants no write access on them at all, only the
-  function can, and the function re-derives price/totals from current table
-  state rather than trusting anything the client passed in. This is the one
-  property carried over unchanged from the original design.
-- Photo uploads still go straight to Storage: the browser requests a signed
-  upload URL via `supabase-js` (`createSignedUploadUrl`), gated by the bucket's
-  own RLS-style storage policies, then PUTs the bytes directly. No server ever
-  proxies file bytes.
-- **No service-role key is ever in the browser.** The browser only ever holds
-  the anon key; authorization comes entirely from RLS evaluated per-row. The
-  only place a secret credential will exist at all is inside a Supabase Edge
-  Function — today, none are needed; the future payment-gateway webhook (§11)
-  will be the first one.
+- **One place enforces authorization** — the API. There is no second set of RLS
+  policies to keep in sync with it.
+- **Therefore: no Row Level Security initially.** This is safe *only* because
+  nothing but the API holds a database credential. **If the browser is ever
+  given direct Supabase database access, RLS becomes mandatory that same day.**
+  This is written here so it cannot be forgotten.
+- Photo uploads still go straight to Storage: the API issues a short-lived
+  signed upload URL, the browser PUTs the bytes to it. The server never proxies
+  file bytes, but the server decides who may upload and where.
+- The Supabase service key exists only in the API's environment. It is never in
+  frontend code, never in a `VITE_*` variable, never in the repo.
 
 ### 5.2 Stack
 
@@ -474,41 +444,39 @@ challenging:
 |---|---|---|
 | Frontend | React 19 + Vite + TypeScript | Not Next.js: a login-walled store gains nothing from SSR and it complicates hosting |
 | Routing | React Router | |
-| Server state | TanStack Query, wrapping `supabase-js` calls | Handles caching, refetch, optimistic updates. No Redux needed. |
+| Server state | TanStack Query | Handles caching, refetch, optimistic updates. No Redux needed. |
 | Client state | React state + a small cart store | Cart persists to `localStorage` |
 | Forms | React Hook Form + Zod | Zod schemas double as the shared request contract |
 | Styling | Tailwind CSS | |
 | Components | shadcn/ui | Copied into the repo, so no library lock-in and no upgrade treadmill |
-| Backend | **None.** Postgres RLS + `SECURITY DEFINER` RPC functions | No API layer to build, deploy, or keep in sync with the schema |
-| Migrations | Supabase CLI migrations (`supabase/migrations/`) | Applied via CLI/CI, never by hand against production |
-| Auth | `supabase-js` client SDK directly | No custom JWT validation, no `CurrentUser`, no `AuthPolicies` |
-| Images | Supabase Storage + RLS storage policies + client-requested signed upload URLs | |
-| Validation | Zod on the client; Postgres constraints and RPC input checks | Client validation is UX; **the database is the actual gate** |
-| Logging | Supabase's own Postgres/Auth/Edge Function logs | Client-side error reporting is a later addition, not yet chosen |
-| Errors | `supabase-js`'s own error shape, surfaced directly | No custom envelope to maintain |
-| Tests | Supabase CLI local dev stack (real Postgres+Auth+PostgREST+Realtime via Docker) + Vitest hitting it through `supabase-js` | Real Postgres in tests, never a mock — same discipline the original Testcontainers choice protected |
+| Backend | .NET 10, **Minimal APIs** | Not MVC controllers: far less ceremony for what is mostly CRUD |
+| ORM | EF Core 10 + Npgsql | As specified |
+| Migrations | EF Core migrations | Applied by CI, never by hand against production |
+| Auth | Supabase Auth; API validates JWT against Supabase JWKS | One auth system serves customers *and* staff |
+| Images | Supabase Storage + signed upload URLs | |
+| Validation | FluentValidation on the API, Zod on the client | Client validation is UX; **server validation is the actual gate** |
+| Logging | Serilog → console (structured) | Whatever the host aggregates |
+| Errors | RFC 7807 ProblemDetails | Uniform error shape for the client |
+| Tests | xUnit + Testcontainers (Postgres) for the API; Vitest for the frontend | Real Postgres in tests, not SQLite or InMemory — the model uses Postgres types and constraints |
 
 ### 5.3 Hosting
 
 | Piece | Where | Approx cost |
 |---|---|---|
-| React SPA | Cloudflare Pages, static | free |
-| Postgres + Auth + Storage + Realtime + Edge Functions | Supabase | free tier → paid as usage grows |
+| React SPA | Vercel or Netlify, static | free |
+| C# API | Fly.io or Railway (single small instance) | ~$5–10/mo |
+| Postgres + Storage + Auth | Supabase | free tier → $25/mo Pro |
 
-No backend server means no Docker, no Cloud Run/Fly/Railway/Azure. Deployment
-is push-to-deploy from `main` via GitHub Actions: Cloudflare Pages builds the
-frontend, and Supabase CLI applies migrations — with a staging Supabase project
-(a separate account from production) that gets the migration first.
+Deployment is push-to-deploy from `main` via GitHub Actions, with a `staging`
+environment that mirrors production and gets the migration first.
 
 ---
 
 ## 6. Roles and permissions
 
-Four roles, enforced by **Postgres Row-Level Security policies** keyed off
-`auth.uid()` and a role lookup against `AppUser`, plus `SECURITY DEFINER` RPC
-functions for money-critical writes. The React app hides controls a role
-cannot use, but hiding is cosmetic — RLS is the real gate. A reviewer should
-assume any hidden button can be reached via a raw PostgREST or `.rpc()` call.
+Four roles, enforced **server-side per endpoint**. The React app hides controls a
+role cannot use, but hiding is cosmetic — the API is the real gate. A reviewer
+should assume any hidden button can be reached by hand.
 
 | Role | Can see and do |
 |---|---|
@@ -519,143 +487,97 @@ assume any hidden button can be reached via a raw PostgREST or `.rpc()` call.
 
 ### 6.1 Authorization rules that must be tested, not assumed
 
-These are the rules a reviewer should specifically try to break — by making raw
-`supabase-js` calls with a real customer's token, not by clicking around the UI:
+These are the rules a reviewer should specifically try to break:
 
-- A customer selecting another customer's order gets **zero rows**, not an
-  error. RLS filters at row level, so "not yours" and "does not exist" are
-  indistinguishable by construction — the 404-not-403 property the API design
-  had to implement by hand is now free.
-- **`auth.uid()` is the only source of identity.** No policy and no RPC function
-  ever takes a customer id, user id, or role as a parameter. This was the single
-  most likely place for a scoping bug before; the equivalent mistake here is an
-  RPC function with a `p_customer_id` argument. Treat any such parameter as a
-  review failure.
-- Role comes from a lookup against `AppUser` evaluated inside the policy. A
-  client cannot assert a role — the JWT carries no role claim to forge.
-- `JapanBuyer` has no `SELECT` policy at all on `Payment`, `Refund`, or the
-  finance views. The query returns nothing, rather than returning data a screen
-  then has to remember to hide.
-- **Every table has RLS enabled.** A table created without
-  `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` is readable by anyone holding the
-  anon key, which is public. There is no application layer left to catch that
-  omission, so a test must enumerate `pg_tables` and fail on any table in
-  `public` with `rowsecurity = false`. This is the highest-severity failure mode
-  in the whole architecture and it is silent.
-- Money-touching tables grant **no** direct `INSERT`/`UPDATE`/`DELETE` to any
-  client. The only write path is a `SECURITY DEFINER` function.
-- **`SECURITY DEFINER` functions bypass RLS entirely** — they run as their
-  owner. Each one must (a) pin a restricted `search_path`, and (b) perform its
-  own `auth.uid()`-based authorization check as its first statement. A
-  `SECURITY DEFINER` function missing that check is a total data breach, not a
-  bug.
-- Payment verification records `VerifiedByUserId` from `auth.uid()` inside the
-  function; it cannot be supplied by the caller.
-- Price is **never** read from the client. `place_order` receives product ids
-  and quantities and looks up `Product.PricePhp` itself. Nothing about a
-  submitted order's money comes from the browser.
+- A customer requesting `GET /api/orders/{id}` for someone else's order gets
+  `404`, not `403` — a 403 confirms the order exists.
+- Order identifiers in URLs are UUIDs, never sequential integers. `OrderCode` is
+  displayed but is not the lookup key on customer endpoints.
+- `CustomerId` is taken **from the JWT only**. It is never accepted from the
+  request body, a query string, or a header. This is the single most likely
+  place for a scoping bug.
+- `JapanBuyer` hitting any finance or payment endpoint gets `403`.
+- Payment verification records `VerifiedByUserId` from the JWT; it cannot be
+  supplied by the caller.
+- Price is **never** read from the client. A cart request sends product ids and
+  quantities; the server looks up the price. Nothing about a submitted order's
+  money comes from the browser.
 
 ---
 
-## 7. Data access surface
+## 7. API surface
 
-Representative, not exhaustive. **There are no HTTP endpoints of our own.** What
-follows is the set of tables and views the browser may read, and the set of RPC
-functions it may call, all through `supabase-js`.
+Representative, not exhaustive. `/api` prefix, JWT bearer auth on everything
+except the public catalog.
 
 **Public / customer**
 
-```ts
-supabase.from('product').select('*, product_photo(*)')   // RLS: is_active, not is_custom
-supabase.from('run').select().eq('status', 'Open')       // the open run + cutoff
-supabase.rpc('place_order', { p_run_id, p_address_id, p_items, p_idempotency_key })
-supabase.from('order').select('*, order_item(*)')        // RLS: own rows only
-supabase.rpc('submit_payment_proof', { p_order_id, p_method, p_amount_php,
-                                       p_reference_no, p_proof_path, p_idempotency_key })
-supabase.storage.from('proofs').createSignedUploadUrl(path)  // storage policy: own folder
-supabase.from('address').select() / .insert() / .update()    // RLS: own rows, direct write
-supabase.rpc('submit_custom_request', { ... })
-supabase.rpc('accept_custom_request_quote', { p_request_id })
+```
+GET    /api/catalog                       list active products (paged, filter by category)
+GET    /api/catalog/{slug}                product detail
+GET    /api/runs/current                  open run + cutoff time
+POST   /api/orders                        place order  { runId, addressId, items:[{productId, qty}] }
+GET    /api/orders                        own orders
+GET    /api/orders/{id}                   own order detail + tracking links
+POST   /api/orders/{id}/payments          submit proof { method, amountPhp, referenceNo, proofPath }
+POST   /api/uploads/sign                  get a signed upload URL { purpose, contentType }
+GET    /api/addresses                     CRUD own addresses
+POST   /api/custom-requests               submit a request
+GET    /api/custom-requests               own requests + quotes
+POST   /api/custom-requests/{id}/accept   accept a quote
 ```
 
 **JapanBuyer**
 
-```ts
-supabase.rpc('get_shopping_list', { p_run_id })          // §7.1 — a function, not a view
-supabase.rpc('mark_order_item', { p_order_item_id, p_status, p_qty_fulfilled,
-                                  p_actual_cost_jpy, p_substitute_note })
-supabase.from('product').insert() / .update()            // RLS: role in (JapanBuyer, Admin)
-supabase.rpc('record_expense', { ... })
+```
+GET    /api/buying/list?runId=            the shopping list: products × total qty across all orders
+POST   /api/buying/lines/{orderItemId}    { status, qtyFulfilled, actualCostJpy, substituteNote }
+POST   /api/products                      create catalog entry
+PUT    /api/products/{id}
+POST   /api/expenses                      record a JPY cost
 ```
 
 **Fulfilment**
 
-```ts
-supabase.from('payment').select().eq('status', 'Submitted')  // RLS: role in (Fulfilment, Admin)
-supabase.rpc('verify_payment', { p_payment_id })
-supabase.rpc('reject_payment', { p_payment_id, p_reason })
-supabase.rpc('issue_refund', { p_order_id, p_order_item_id, p_amount_php, p_reason })
-supabase.rpc('create_shipment', { ... })
-supabase.rpc('assign_orders_to_shipment', { p_shipment_id, p_order_ids })
-supabase.from('shipment').update()                       // tracking, weight, status
+```
+GET    /api/admin/payments?status=Submitted    verification queue
+POST   /api/admin/payments/{id}/verify
+POST   /api/admin/payments/{id}/reject         { reason }
+POST   /api/admin/refunds                      { orderId, orderItemId?, amountPhp, reason }
+POST   /api/admin/shipments                    create a box
+POST   /api/admin/shipments/{id}/orders        assign orders to it
+PUT    /api/admin/shipments/{id}               tracking, weight, cost, status
 ```
 
 **Admin**
 
-```ts
-supabase.rpc('create_run', { ... })
-supabase.rpc('advance_run_status', { p_run_id, p_status })
-supabase.from('v_run_pnl').select().eq('run_id', runId)  // revenue, COGS, expenses, margin
-supabase.from('v_product_margin').select()               // margin by product across runs
-supabase.from('v_pnl').select().gte('month', from)
-supabase.from('app_user').update({ role })               // RLS: role = Admin
+```
+POST   /api/admin/runs                    create a run
+POST   /api/admin/runs/{id}/status        advance the run state
+GET    /api/admin/reports/run/{id}        revenue, COGS, expenses, margin
+GET    /api/admin/reports/products        margin by product across runs
+GET    /api/admin/reports/pnl?from=&to=
+PUT    /api/admin/users/{id}/role
 ```
 
 ### 7.1 The shopping list
 
-The single most-used screen for the Japan member, and it still needs **no table
-of its own** — but it cannot be a plain view either, and the reason is worth
-stating because it generalises.
-
-A `security_invoker` view would evaluate the underlying tables' RLS as the
-caller, which means `JapanBuyer` would need a `SELECT` policy on `Order` — and
-`Order` carries the snapshotted customer name, phone and delivery address.
-Granting that to see an aggregate would hand the Japan member every customer's
-home address. Postgres column-level grants can't help: they attach to a database
-role, and every logged-in user here shares the `authenticated` role.
-
-So the shopping list is a `SECURITY DEFINER` function that checks the caller's
-role first and returns only the aggregate:
+The single most-used screen for the Japan member, and it needs **no table of its
+own**:
 
 ```sql
-CREATE FUNCTION get_shopping_list(p_run_id uuid) RETURNS TABLE (...)
-LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
-  SELECT p.id, p.name, p.source_store, p.ref_price_jpy, SUM(oi.qty) AS total_qty
-  FROM   order_item oi
-  JOIN   "order" o      ON o.id = oi.order_id
-  LEFT   JOIN product p ON p.id = oi.product_id
-  WHERE  o.run_id = p_run_id
-    AND  o.status = 'Confirmed'
-  GROUP  BY p.id, p.name, p.source_store, p.ref_price_jpy
-  ORDER  BY p.source_store, p.name;
-$$;
+SELECT p.Id, p.Name, p.SourceStore, p.RefPriceJpy, SUM(oi.Qty) AS TotalQty
+FROM   OrderItem oi
+JOIN   "Order" o     ON o.Id = oi.OrderId
+LEFT   JOIN Product p ON p.Id = oi.ProductId
+WHERE  o.RunId = @runId
+  AND  o.Status = 'Confirmed'
+GROUP  BY p.Id, p.Name, p.SourceStore, p.RefPriceJpy
+ORDER  BY p.SourceStore, p.Name;
 ```
 
 Grouped by store so the shopping route is walkable. Marking a product bought
 updates every order line for that product in one call.
-
-### 7.2 View, function, or direct write — the rule
-
-| The call is… | Use | Why |
-|---|---|---|
-| A read the caller may see row by row | View with `security_invoker = true` | Base-table RLS still applies; no second policy to keep in sync |
-| A read that aggregates across rows the caller must **not** see individually | `SECURITY DEFINER` function, role check first | §7.1 — the aggregate is safe, the underlying rows are not |
-| A write touching money, or spanning rows the caller doesn't own | `SECURITY DEFINER` function | Server-side re-derivation of every amount; RLS grants no direct write |
-| A write touching only the caller's own non-money data | Direct table write under RLS | Addresses, profile. No function earns its keep here. |
-
-When in doubt, the function is the safe answer and the view is the cheap one.
-Choosing "view" wrongly leaks data; choosing "function" wrongly only costs a
-migration.
 
 ---
 
@@ -665,25 +587,20 @@ migration.
 
 ```
 Customer adds to cart (localStorage)
-  → rpc('place_order')   ← the function recomputes every price from the DB
+  → POST /api/orders   ← server recomputes every price from the DB
   → Order = AwaitingPayment, shows payment instructions + exact PHP amount
-  → Customer pays via GCash, uploads screenshot to Storage
-  → rpc('submit_payment_proof') → Payment = Submitted, Order = PaymentSubmitted
+  → Customer pays via GCash, uploads screenshot
+  → POST /api/orders/{id}/payments → Payment = Submitted, Order = PaymentSubmitted
   → Fulfilment sees it in the verification queue, checks the GCash app, verifies
-  → rpc('verify_payment') → Payment = Verified; Order.AmountPaidPhp recomputed
+  → Payment = Verified; Order.AmountPaidPhp recomputed
   → if AmountPaidPhp >= GrandTotalPhp → Order = Confirmed, ConfirmedAt set
   → Confirmed orders, and only Confirmed orders, enter the shopping list
 ```
 
-**Idempotency:** `place_order` and `submit_payment_proof` each take a
-client-generated `p_idempotency_key` uuid, stored on the row behind a unique
-index. The function looks the key up first and returns the existing row rather
-than inserting a second. Double submission — a double-tap on a phone, a retried
-request on flaky mobile data — must produce **one** order, not two.
-
-There is no automatic retry on any write path. TanStack Query does not retry
-mutations by default, and that default must not be changed for these calls; a
-retried `.rpc()` is exactly the double-submission the key exists to absorb.
+**Idempotency:** `POST /api/orders` accepts an `Idempotency-Key` header. Double
+submission — a double-tap on a phone, a retried request on flaky mobile data —
+must produce **one** order, not two. There is no automatic retry on any write
+path.
 
 ### 8.2 Run cutoff → buying
 
@@ -710,12 +627,6 @@ Line marked Unavailable
   → Refund = Completed; Order.AmountRefundedPhp recomputed
   → customer is notified, and can see it in their order
 ```
-
-> The line status change and the `Pending` refund row are written in the **same
-> `mark_order_item` transaction**. An unavailable item that failed to create its
-> refund row is money quietly owed to a customer with nothing in the system
-> saying so — the RPC boundary is what makes "both or neither" the default here
-> rather than something two separate calls have to arrange.
 
 > Refunds are **never** automatic. The money moves by a human hand and the row
 > records who and when. Nothing in this app moves money on its own.
@@ -768,9 +679,8 @@ orders by order value. Not stored — see §11.
 Non-negotiable. These are the ones that cause silent, expensive, hard-to-detect
 wrongness.
 
-1. **Money is `numeric`.** Never `float`, `double` or `real` — not in Postgres,
-   not in an RPC function's own locals, and never JS `number` arithmetic on an
-   amount that came back as JSON. Format for display only at the edge.
+1. **Money is `decimal`.** Never `float`, `double` or `real`, in C#, in
+   Postgres, or in TypeScript arithmetic. Format for display only at the edge.
 2. **Currency is explicit** on every amount. No bare `Amount` column anywhere.
 3. **FX rates are recorded at the moment of use**, never looked up at report
    time. Historical reports must be reproducible.
@@ -782,16 +692,11 @@ wrongness.
    render. Run cutoffs are authored and displayed in JST because that is where
    the shopping happens.
 7. **Writes are idempotent where the user can retry them.** Order placement and
-   payment submission both take a unique-indexed idempotency key parameter.
+   payment submission both take an `Idempotency-Key`.
 8. **No silent `catch`.** A failure surfaces as an error state in the UI. A
    screen that cannot load its data says so — it never renders zeros, an empty
-   list, or an all-clear. A dashboard showing ₱0 profit because the query failed
+   list, or an all-clear. A dashboard showing ₱0 profit because the API is down
    is worse than a dashboard showing an error.
-   **In this architecture the silent catch has a specific shape:** `supabase-js`
-   does not throw — it returns `{ data, error }`. Destructuring only `data` and
-   rendering it turns every failure, including a permission denial, into an
-   empty list. Every call site checks `error`. This is the single easiest way to
-   ship a screen that lies.
 9. **Deletes are soft** for anything money touches (orders, payments, refunds,
    expenses). Hard delete is available only on draft catalog entries.
 
@@ -812,12 +717,12 @@ explicitly rather than left implicit.**
 | **Store credit ledger** | Straight refunds | Refunds get frequent enough that keeping the money in is worth the code |
 | **Line-level packing** (`ShipmentItem`) | One FK on `Order` — an order rides in exactly one box | An order genuinely has to split across two boxes; until then, split the order |
 | **Courier API integration** | Courier + tracking number + a URL template | Manual tracking checks become a real time cost. J&T/LBC/Flash gate their APIs behind business accounts and return little more than the public page. |
-| **Payment gateway** | Manual proof-of-payment | Volume justifies the fees, or DTI/BIR registration is done. The `Provider`/`ProviderRef` seam is already in `Payment`. When built, the gateway secret and its webhook live in a Supabase Edge Function — not a new vendor. |
-| **A backend server of our own** | Supabase RLS + `SECURITY DEFINER` RPC (§5.1) | A requirement appears that Postgres genuinely cannot express — a long-running job, or a third-party integration that must hold a secret. First stop is an Edge Function, not a server. |
+| **Payment gateway** | Manual proof-of-payment | Volume justifies the fees, or DTI/BIR registration is done. The `Provider`/`ProviderRef` seam is already in `Payment`. |
+| **Row Level Security** | API-only database access (§5.1) | **Immediately**, if the browser is ever given direct Supabase DB access |
 | **Full audit log** | `CreatedByUserId` / `VerifiedByUserId` on the tables that matter | More than ~5 staff, or a dispute you cannot reconstruct |
 | **Multi-currency display** | PHP for customers, JPY only in admin cost entry | Never, at this scale |
 | **Search engine** (Meilisearch, pg full-text) | Postgres `ILIKE` + a trigram index | The catalog passes a few thousand products |
-| **Background job runner** (`pg_cron`, scheduled Edge Function) | Everything is request-driven; staff push the buttons | You want scheduled cutoff closing or automated notification batches |
+| **Background job runner** (Hangfire, Quartz) | Everything is request-driven; staff push the buttons | You want scheduled cutoff closing or automated notification batches |
 | **Email/SMS notifications** | In-app status the customer can check | See §14 — this may be wrong; flagged for the reviewer |
 
 ---
@@ -858,7 +763,7 @@ instructions is a separate document.
 
 | # | Milestone | Ends when | Est. |
 |---|---|---|---|
-| 0 | **Foundations** | Repo, CI, Supabase migrations, local Supabase stack running, login works end to end | 3–4d |
+| 0 | **Foundations** | Repo, CI, EF migrations, deployed hello-world on real infra, login works end to end | 3–4d |
 | 1 | **Catalog + admin entry** | A product with photos can be added from a phone, in Japan, over mobile data | 4–5d |
 | 2 | **Storefront + cart + orders** | A customer can browse and place an order; custom requests work | 5–6d |
 | 3 | **Payments** | Buyer uploads GCash proof, staff verifies, order confirms | 3–4d |
@@ -879,13 +784,9 @@ Ranked by how expensive it is to get wrong. Please push hardest at the top.
 1. **§3 — is the Run the right spine?** Everything else is downstream of this.
    If a run should actually be able to contain sub-trips, or if orders should be
    able to move between runs freely, the model needs to know now.
-2. **§5.1 / §6.1 — RLS plus `SECURITY DEFINER` RPC as the only boundary.** The
-   failure mode has moved, not disappeared. It is no longer "an endpoint forgot
-   to scope its query"; it is "a table shipped with RLS disabled" or "a
-   `SECURITY DEFINER` function skipped its own auth check". Both are silent and
-   total, and neither has an application layer left to catch it. Is the
-   `pg_tables` enumeration test in §6.1 enough, or does this need something
-   stronger?
+2. **§5.1 — no RLS, API-only database access.** This is a real security
+   decision. Is single-boundary-with-no-RLS the right call, or is
+   defence-in-depth worth the double maintenance here?
 3. **§4.4 — one box per order** (`Order.InternationalShipmentId` as a plain FK).
    How often will an order actually need to split across two boxes? If the
    answer is "most runs", this is wrong and `ShipmentItem` should exist from day
@@ -899,9 +800,9 @@ Ranked by how expensive it is to get wrong. Please push hardest at the top.
    one? This is the omission most likely to be wrong.
 7. **§4.4 — cached `AmountPaidPhp` on `Order`.** Denormalised sum. Worth it, or
    should it always be computed?
-8. **§7.2 — reports as `security_invoker` views** rather than functions, and
-   **shadcn/ui copied in** rather than a component library. Both are reversible;
-   both are worth a second opinion.
+8. **§5.2 — Minimal APIs over controllers**, and **shadcn/ui copied in** rather
+   than a component library. Both are reversible; both are worth a second
+   opinion.
 9. **Anything in §10 that you would add.** That list is the one where an
    omission is silent.
 
@@ -920,27 +821,3 @@ Not blocking the build, but each changes some detail:
 - What happens to an unpaid order when the cutoff passes — cancel, or roll to
   the next run? Currently a manual decision by staff.
 - Minimum order value, or a maximum per customer per run?
-
----
-
-## 16. Surfaced during the 2026-09-08 replan — not yet designed
-
-Two real requirements came up while reworking the architecture. Neither is in
-§4's data model and neither has a schema yet. They are recorded here so they are
-not rediscovered late.
-
-1. **Per-account chat, customer ↔ admin.** Not per-order — an ongoing thread per
-   customer, used to confirm availability and settle payment questions. This is
-   how payment confirmation actually happens today. It needs its own table, RLS
-   scoped to the two participants, and Supabase Realtime for delivery. Design it
-   in M2 or M3; it touches the payment flow in §8.1, which currently pretends
-   the verification queue is the only channel.
-
-2. **"Tagged as a sale" and listing status are two independent facts.** §4.4.1's
-   single `Order.Status` enum conflates them. Because this is buy-on-behalf and
-   not sell-from-stock, an admin confirming payment ("this is a sale") is a
-   separate event from whether the underlying item remains open to other
-   customers. One field cannot carry both without producing states that mean
-   different things depending on context. Resolve this before M2 builds ordering
-   on top of the enum — see also challenge #4 in §14, which already suspected
-   that enum of doing too much.

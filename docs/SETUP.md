@@ -40,7 +40,6 @@ Settings → System → About → Advanced system settings → Environment Varia
 | `Supabase__Url` | `https://rgkajxgxuwnkhpnlbwek.supabase.co` | Project home page, or Settings → API |
 | `Supabase__ServiceKey` | (secret) | Settings → API → Project API keys → `service_role` |
 | `ConnectionStrings__Db` | (secret) | Settings → Database → **Session pooler** URI → see **below** — do not use it as-is |
-| `MEDIATR_LICENSE_KEY` | (keep private) | Register pajapan for MediatR's free Community license at [luckypennysoftware.com](https://luckypennysoftware.com). Single underscore: this is MediatR's own variable name, not ASP.NET config. **Required in production** by MediatR's license terms. Locally and in tests the API runs without it and logs a notice that it is missing |
 
 The **double underscore** (`__`) is ASP.NET Core's syntax for nested config
 keys (`Supabase:Url`) in environment variables — not a typo.

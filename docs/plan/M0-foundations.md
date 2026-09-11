@@ -611,9 +611,7 @@ update app_user set role = 3 where email = 'you@example.com';
       which is committed. Use the double-underscore names (`ConnectionStrings__Db`,
       `Supabase__Url`), and `ConnectionStrings__Db` in ADO.NET keyword format, not
       the URI the dashboard shows (`docs/SETUP.md`). Point Railway's health check at
-      `/health` and turn App Sleeping on (spec §5.3). Set `MEDIATR_LICENSE_KEY` as a
-      service variable too — MediatR's license requires it outside development and
-      testing (`docs/SETUP.md`).
+      `/health` and turn App Sleeping on (spec §5.3).
 
   > The image listens on 8080 (`EXPOSE 8080`, `ASPNETCORE_HTTP_PORTS`). Make
   > Railway's target port match — check it rather than assuming Railway detects it.
@@ -625,6 +623,23 @@ update app_user set role = 3 where email = 'you@example.com';
   > `ENETUNREACH`. Not the transaction pooler on 6543 — it breaks Npgsql's prepared
   > statements. Create the Railway service in the same region as the Supabase
   > project (spec §5.3).
+
+  > **Switch Wolverine to `TypeLoadMode.Static` before this deploys.** By default
+  > Wolverine compiles each handler with Roslyn on first use, and with App Sleeping
+  > every wake is a first use — so the cold-start cost lands on a real request.
+  >
+  > Static mode loads handlers pre-generated at build time:
+  > - Run `dotnet run -- codegen write`. It needs
+  >   `return await app.RunJasperFxCommands(args);` in place of `app.Run();`.
+  > - Commit `Internal/Generated/`.
+  > - Set `opts.CodeGeneration.TypeLoadMode = TypeLoadMode.Static` outside
+  >   Development.
+  >
+  > **Regenerate whenever a handler's signature changes** — Static fails at startup
+  > when the generated code is missing. `codegen write` runs the app's startup, so
+  > wherever it runs without real config (CI, the Docker build), the config guards
+  > at the top of `Program.cs` need real-looking dummy values; they reject
+  > `__SET_LOCALLY__`.
 
 - [ ] **4.** Deploy `web/` to **Cloudflare Pages**: project root `web/`, build
       `npm run build`, output `dist`, with the staging `VITE_*` variables.
@@ -668,6 +683,9 @@ update app_user set role = 3 where email = 'you@example.com';
       failed
 - [ ] `GET /health` returns 503 when the database is unreachable
 - [ ] `README.md` "Running locally" is accurate enough for someone else to follow
+- [ ] The deployed image runs Wolverine with `TypeLoadMode.Static` — no Roslyn
+      compilation at startup — and the first request after the container wakes is
+      timed and recorded in the PR
 
 ---
 

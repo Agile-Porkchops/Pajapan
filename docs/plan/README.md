@@ -79,14 +79,29 @@ spec §10 unless noted.
 
 **Structure** (spec §5.2)
 
-17. **CQRS via MediatR.** Every endpoint sends a Command (changes state) or a Query
-    (reads) through `ISender`, and that request's handler holds the logic. An
-    endpoint never touches `AppDbContext`. Queries never write: `AsNoTracking()`, no
-    `SaveChangesAsync`. The caller's identity reaches a handler only through an
-    injected `CurrentUser`, never as a property of a Command or Query (see 10). One
-    file per use case — `Features/<Slice>/<UseCase>.cs` holds the request, its handler
-    and its response — plus one `<Slice>Endpoints.cs` mapping the slice's routes.
-    Reference: `Features/Me/GetMe.cs`.
+17. **CQRS via Wolverine, in-process only.**
+    - Every endpoint sends a Command (changes state) or a Query (reads) through
+      `IMessageBus.InvokeAsync`, and that message's handler holds the logic. An
+      endpoint never touches `AppDbContext`.
+    - Queries never write: `AsNoTracking()`, no `SaveChangesAsync`.
+    - The caller's identity reaches a handler only as an injected `CurrentUser`
+      parameter, never as a property of a Command or Query (see 10).
+    - Handlers are found by convention: a class named `<Message>Handler` with a
+      `Handle` method whose first parameter is the message. Services are further
+      method parameters.
+    - One file per use case — `Features/<Slice>/<UseCase>.cs` holds the message,
+      its handler and its response — plus one `<Slice>Endpoints.cs` mapping the
+      slice's routes. Reference: `Features/Me/GetMe.cs`.
+
+    **No transports, no message persistence, no retry or error policies.** Those
+    turn an in-process mediator into a message bus, and a retry on a write path
+    breaks Constraint 8. Adding any of them is an architecture decision, not a
+    task detail.
+
+    **Infrastructure classes that end in `Handler`** (ASP.NET authorization and
+    exception handlers) are excluded from Wolverine discovery — see `RoleHandler`.
+    A new one needs the same exclusion.
+
     **Task code samples written before this rule put the logic inside the endpoint
     lambda. That logic belongs in the handler — the sample shows *what* to do, not
     *where*.**
@@ -101,7 +116,7 @@ Actual installed versions, verified 2026-09-11 — not aspirational pins.
 |---|---|---|
 | .NET SDK | 10.0.400 | pinned in `global.json`. Use `& "C:\Program Files\dotnet\dotnet.exe"` — `dotnet` on PATH is the x86 runtime-only install with no SDK |
 | EF Core | 10.0.11 | with `Npgsql.EntityFrameworkCore.PostgreSQL` 10.0.3 |
-| MediatR | 14.2.0 | free Community license; key read from the `MEDIATR_LICENSE_KEY` env var |
+| Wolverine | 6.36.0 | NuGet `WolverineFx`, MIT |
 | Node | 24.14.0 | CI still pins 22 — see M0-07 |
 | React | 19.2 | |
 | Vite | 8.2 | |
@@ -133,7 +148,7 @@ pajapan/
 │       │   └── Migrations/
 │       ├── Features/                    one folder per slice — Constraint 17
 │       │   ├── Me/
-│       │   │   ├── MeEndpoints.cs       routes only: build the request, ISender.Send
+│       │   │   ├── MeEndpoints.cs       routes only: build the message, IMessageBus.InvokeAsync
 │       │   │   └── GetMe.cs             GetMeQuery + GetMeHandler + MeResponse
 │       │   ├── Catalog/
 │       │   ├── Orders/
@@ -167,10 +182,10 @@ pajapan/
 are never edited apart. Splitting them costs a file switch on every change and buys
 nothing.
 
-**Cross-cutting concerns are MediatR pipeline behaviors**, not code repeated in each
+**Cross-cutting concerns are Wolverine middleware**, not code repeated in each
 handler. The first task that needs a validator (M1-02 or M1-03) adds FluentValidation
-and a single `ValidationBehavior<TRequest, TResponse>`; nothing adds one before a
-validator exists to run.
+through Wolverine's FluentValidation integration (NuGet `WolverineFx.FluentValidation`);
+nothing adds one before a validator exists to run.
 
 ---
 

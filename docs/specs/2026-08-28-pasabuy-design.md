@@ -465,7 +465,7 @@ challenging:
 |---|---|---|
 | React SPA | Cloudflare Pages, static | free |
 | C# API | Railway, Hobby plan — one small container built from `src/Pajapan.Api/Dockerfile`, App Sleeping on | $5/mo, which includes $5 of usage |
-| Postgres + Storage + Auth | Supabase | free tier → $25/mo Pro |
+| Postgres + Storage + Auth | Supabase | free during development → **Pro, $25/mo, at launch** |
 
 Deployment is push-to-deploy from `main`: Cloudflare Pages builds `web/`, Railway
 builds the API image. A `staging` environment mirrors production and gets every
@@ -473,6 +473,21 @@ migration first. Migrations run from CI, before the new image takes traffic.
 
 The SPA and the API are on **different origins**, so the API's CORS allowlist must
 name the Pages origins explicitly — production and staging, never a wildcard.
+
+**Supabase stays the database.** Railway Postgres was considered on 2026-09-11 and
+rejected: Supabase Auth — the login and token validation built in M0-04 and M0-06 —
+is the expensive, security-critical part to replace, and the data itself is not
+locked in (EF Core migrations are plain Postgres). Three consequences:
+
+- **Production goes on Pro at launch (M7-08).** Free projects pause after 7 days of
+  low activity and keep no backups. A quiet week between runs would take production
+  down, and payment records would have no backup at all.
+- **The API connects through Supabase's session pooler** (`*.pooler.supabase.com`,
+  port 5432, IPv4) — never the direct host `db.<ref>.supabase.co`, which is
+  IPv6-only; Railway has no outbound IPv6 and fails with `ENETUNREACH`. Not the
+  transaction pooler on 6543 either: it breaks Npgsql's prepared statements.
+- **The Railway service runs in the same region as the Supabase project.** EF Core
+  makes several round trips per request, and every one of them crosses providers.
 
 > **Cold starts are the price of App Sleeping.** A sleeping container wakes on the
 > next request, and .NET startup adds a second or more to it. At ~100 orders a

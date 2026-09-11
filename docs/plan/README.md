@@ -98,9 +98,11 @@ spec §10 unless noted.
     breaks Constraint 8. Adding any of them is an architecture decision, not a
     task detail.
 
-    **Infrastructure classes that end in `Handler`** (ASP.NET authorization and
-    exception handlers) are excluded from Wolverine discovery — see `RoleHandler`.
-    A new one needs the same exclusion.
+    **Everything in `Pajapan.Api.Infrastructure` is excluded from Wolverine
+    discovery** (`Program.cs`), so ASP.NET authorization and exception handlers
+    there can keep the `Handler` suffix. Anywhere else, a class ending in
+    `Handler` with a public `Handle`/`HandleAsync` method **is** a Wolverine
+    handler — name non-handler classes accordingly.
 
     **Task code samples written before this rule put the logic inside the endpoint
     lambda. That logic belongs in the handler — the sample shows *what* to do, not

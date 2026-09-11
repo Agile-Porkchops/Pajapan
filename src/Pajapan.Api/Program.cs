@@ -50,8 +50,8 @@ builder.Services.AddScoped<IAuthorizationHandler, RoleHandler>();
 // In-process only: no transports, no message persistence, no retry policies (Constraint 8).
 builder.Host.UseWolverine(opts =>
 {
-    // Pinned: Wolverine caches the scanned assembly in a process-wide static, so under
-    // the test runner whichever host starts first would otherwise decide it.
+    // Pinned rather than inferred from the call stack. Static codegen (M0-07) loads
+    // pre-generated handlers from this assembly, and Wolverine caches it process-wide.
     opts.ApplicationAssembly = typeof(Program).Assembly;
 
     // AddDbContext registers DbContextOptions through a factory Wolverine can't inline,

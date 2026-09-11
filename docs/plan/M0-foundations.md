@@ -635,6 +635,12 @@ update app_user set role = 3 where email = 'you@example.com';
   > - Set `opts.CodeGeneration.TypeLoadMode = TypeLoadMode.Static` outside
   >   Development.
   >
+  > The Roslyn compiler comes from `WolverineFx.RuntimeCompilation` — Wolverine 6
+  > split it out of the core package, and Dynamic mode fails at startup without it.
+  > It is the heavy part of the image. Once handlers load Static, check whether it
+  > can leave the production build; it may still be needed wherever `codegen write`
+  > runs.
+  >
   > **Regenerate whenever a handler's signature changes** — Static fails at startup
   > when the generated code is missing. `codegen write` runs the app's startup, so
   > wherever it runs without real config (CI, the Docker build), the config guards

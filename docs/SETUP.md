@@ -39,7 +39,7 @@ Settings → System → About → Advanced system settings → Environment Varia
 |---|---|---|
 | `Supabase__Url` | `https://rgkajxgxuwnkhpnlbwek.supabase.co` | Project home page, or Settings → API |
 | `Supabase__ServiceKey` | (secret) | Settings → API → Project API keys → `service_role` |
-| `ConnectionStrings__Db` | (secret) | Settings → Database → see **below** — do not use the "URI" tab as-is |
+| `ConnectionStrings__Db` | (secret) | Settings → Database → **Session pooler** URI → see **below** — do not use it as-is |
 
 The **double underscore** (`__`) is ASP.NET Core's syntax for nested config
 keys (`Supabase:Url`) in environment variables — not a typo.
@@ -49,13 +49,21 @@ shows by default.** Npgsql's connection string parser does not accept
 `postgresql://user:pass@host:port/db` — passing it throws
 `Format of the initialization string does not conform to specification`
 the first time EF actually opens a connection (which is lazy, so this can sit
-broken for a while before anyone notices). Copy the "URI" connection string
-from Settings → Database, then convert it with this one-liner in PowerShell
-(reads the clipboard, so copy the URI first):
+broken for a while before anyone notices).
+
+**Copy the Session pooler URI** — host `*.pooler.supabase.com`, port 5432,
+username `postgres.<project-ref>`. Not "Direct connection": the direct host
+`db.<ref>.supabase.co` is IPv6-only, so it works from a PC with IPv6 and then
+fails on Railway, which has no outbound IPv6 (`ENETUNREACH`). Not the
+Transaction pooler on 6543 either — it breaks Npgsql's prepared statements.
+Use the same pooler string locally so what you test is what deploys.
+
+Then convert it with this one-liner in PowerShell (reads the clipboard, so copy
+the URI first):
 
 ```powershell
 $uri = [Uri](Get-Clipboard)
-$userInfo = $uri.UserInfo -split ':', 2
+$userInfo = $uri.UserInfo -split ':', 2 | ForEach-Object { [Uri]::UnescapeDataString($_) }   # UserInfo stays %-encoded: p@ss would arrive as p%40ss
 $connString = "Host=$($uri.Host);Port=$($uri.Port);Database=$($uri.AbsolutePath.TrimStart('/'));Username=$($userInfo[0]);Password=$($userInfo[1]);SSL Mode=Require;Trust Server Certificate=true"
 $connString
 ```

@@ -45,6 +45,10 @@ builder.Services.AddAuthorization(AuthPolicies.Configure);
 builder.Services.AddScoped<CurrentUser>();
 builder.Services.AddScoped<IAuthorizationHandler, RoleHandler>();
 
+// CQRS: endpoints send Commands and Queries through ISender (Global Constraint 17).
+// MediatR reads its Community license key from MEDIATR_LICENSE_KEY by itself.
+builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblyContaining<Program>());
+
 // CanConnectAsync() against the real database -- a 200 that never touches it
 // tells an orchestrator nothing.
 builder.Services.AddHealthChecks().AddDbContextCheck<AppDbContext>();

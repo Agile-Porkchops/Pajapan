@@ -274,7 +274,8 @@ git grep -nE "\?\?\s*\[\]|\|\|\s*\[\]|catch.*return \[\]" -- web/src/
 
 - [ ] **1.** Production Supabase project, separate from staging, its own keys, **on the
       Pro plan** (spec §5.3). Free projects pause after 7 days of low activity — a quiet
-      week between runs would take production down.
+      week between runs would take production down. The production Railway service
+      gets `MEDIATR_LICENSE_KEY`; MediatR's license requires it in production.
 - [ ] **2.** Run migrations against production from CI. Verify the schema matches
       staging: `dotnet ef migrations list` on both.
 - [ ] **3.** Create the three real staff accounts with correct roles. Verify each sees

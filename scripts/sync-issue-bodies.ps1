@@ -113,10 +113,8 @@ $constraints
 
 - [ ] Every **Done when** item above verified by running it
 - [ ] Global constraints hold
-- [ ] No secret or real customer data in the diff
-- [ ] ``npm run build`` / ``test`` / ``lint`` clean; database tests pass against the local stack
-- [ ] Any new table has RLS enabled and a negative test proving isolation
-- [ ] Any new ``SECURITY DEFINER`` function pins ``search_path`` and checks ``auth.uid()`` first
+- [ ] No secret, connection string or real customer data in the diff
+- [ ] Build clean, no new warnings, tests pass
 - [ ] Branch is ``feature/...``, not ``main``
 "@
 

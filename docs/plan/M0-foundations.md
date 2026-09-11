@@ -1,328 +1,665 @@
 # M0 — Foundations
 
-**Goal:** A logged-in user reaches their own row and nothing else, enforced by the
-database, with a local Supabase stack anyone on the team can reset and re-seed.
+**Goal:** A logged-in user can hit a deployed API endpoint that knows who they are and
+what role they have. Nothing else works yet, and that is fine.
 
-**Why this order:** Every later milestone assumes auth, migrations and the RLS
-pattern work. Discovering in M3 that a policy was wrong costs a day; discovering it
+**Why this order:** Every later milestone assumes auth, migrations and deployment
+work. Discovering in M3 that the JWT audience was wrong costs a day; discovering it
 here costs ten minutes.
 
-**Read first:** spec §5 (architecture), §5.1 (trust boundary), §6.1 (the rules that
-must be tested), §7.2 (view vs function vs direct write).
+**Read first:** spec §5 (architecture), §5.1 (trust boundary), §6 (roles).
 **Constraints:** [`README.md#global-constraints`](README.md#global-constraints).
 
----
-
-> ## ⚠ Architecture pivoted 2026-09-08, mid-milestone
->
-> M0-01…M0-07 were built against React → **C# Minimal API** → Postgres. That API is
-> retired. Each task below now carries a status line saying what survived, what is
-> dead, and what replaced it. **Do not follow a superseded task's instructions** —
-> the detail has been removed rather than left lying around to be copied by mistake.
-> It is recoverable from git history if ever needed.
->
-> M0-08…M0-10 are the new work that actually completes this milestone.
-
-**Status:** 4 tasks stand, 2 superseded, 1 needs rework, 3 new · **estimate** 1–2 days
-remaining
-
-| # | Task | Status |
-|---|---|---|
-| M0-01 | Repository scaffolding | ◐ partly retired — .NET solution goes, repo hygiene stays |
-| M0-02 | Supabase project and configuration | ◐ rework — config shape changed |
-| M0-03 | EF Core, DbContext, first migration | ✗ **superseded** by M0-08/M0-09 |
-| M0-04 | JWT validation and CurrentUser | ✗ **superseded** — `supabase-js` does this |
-| M0-05 | React application scaffold | ✓ stands, minus `apiClient.ts` |
-| M0-06 | Login end to end | ◐ mostly stands — but its no-`.from()` guard is now backwards |
-| M0-07 | CI and deployment | ◐ rework — CI merged in [#66](https://github.com/Agile-Porkchops/pajapan/pull/66); deploy re-scoped |
-| M0-08 | Supabase CLI and local stack | ⬜ new |
-| M0-09 | RLS foundation and structural guards | ⬜ new · 🔴 |
-| M0-10 | Rewire web to Supabase-native | ⬜ new |
+**Estimate:** 3–4 days · **7 tasks**
 
 ---
 
 ## M0-01 · Repository scaffolding
 
-**Status:** ◐ **partly retired.** `.gitignore`, `.editorconfig` and `README.md` stand.
-`Pajapan.sln`, `global.json` and `Directory.Build.props` exist only to build the
-retired API and are removed with it.
+**Depends on:** nothing
+**Branch:** `feature/m0-scaffolding`
 
-**Done when:** (unchanged) `git status` is clean; `bin/`, `obj/`, `node_modules/` are
-not tracked.
+**Files:**
+- Create: `Pajapan.sln`, `.gitignore`, `.editorconfig`, `README.md`,
+  `Directory.Build.props`, `global.json`
+
+**Steps:**
+
+- [ ] **1.** Pin the SDK so a machine with a different default doesn't silently build
+      differently. `global.json`:
+
+```json
+{ "sdk": { "version": "10.0.400", "rollForward": "latestFeature" } }
+```
+
+- [ ] **2.** Create the solution and projects:
+
+```bash
+"/c/Program Files/dotnet/dotnet.exe" new sln -n Pajapan
+"/c/Program Files/dotnet/dotnet.exe" new web -o src/Pajapan.Api -f net10.0
+"/c/Program Files/dotnet/dotnet.exe" new xunit -o tests/Pajapan.Api.Tests -f net10.0
+"/c/Program Files/dotnet/dotnet.exe" sln add src/Pajapan.Api tests/Pajapan.Api.Tests
+"/c/Program Files/dotnet/dotnet.exe" add tests/Pajapan.Api.Tests reference src/Pajapan.Api
+```
+
+- [ ] **3.** `Directory.Build.props` — turn warnings into errors now, while there are
+      zero of them. Doing this in M7 means fixing 200 at once:
+
+```xml
+<Project>
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+</Project>
+```
+
+- [ ] **4.** `.gitignore` — start from the standard set and add:
+      `appsettings.Local.json`, `.env`, `.env.local`, `web/node_modules`, `web/dist`,
+      `**/bin`, `**/obj`, `.vs`, `*.user`.
+
+- [ ] **5.** `README.md`: one paragraph on what Pajapan is, a link to
+      `docs/specs/2026-08-28-pasabuy-design.md` and `docs/plan/README.md`, and a
+      "Running locally" section (filled in by M0-05).
+
+- [ ] **6.** Commit.
+
+```bash
+git add -A && git commit -m "chore: solution scaffolding, SDK pin, warnings-as-errors"
+```
+
+**Done when:**
+- [ ] `"/c/Program Files/dotnet/dotnet.exe" build` exits 0 with no warnings
+- [ ] `git status` is clean and `bin/`, `obj/`, `node_modules/` are not tracked
 
 ---
 
 ## M0-02 · Supabase project and configuration
 
-**Status:** ◐ **rework.** The `pajapan-staging` project, the `product-photos` bucket
-and `docs/SETUP.md` all stand. What changed is the set of values that exist at all.
+**Depends on:** M0-01
+**Branch:** `feature/m0-supabase-config`
 
-**What the config is now:**
+**Files:**
+- Create: `src/Pajapan.Api/appsettings.json`,
+  `src/Pajapan.Api/appsettings.Local.json.example`,
+  `docs/SETUP.md`
 
-| Key | Secret? | Where |
+**Steps:**
+
+- [ ] **1.** In the Supabase dashboard create two projects: `pajapan-staging` and
+      `pajapan-prod`. Do M0 through M7 entirely against staging.
+
+- [ ] **2.** In each project, enable **asymmetric JWT signing keys** (Settings → API →
+      JWT Keys). This publishes a JWKS at
+      `https://<ref>.supabase.co/auth/v1/.well-known/jwks.json`, which is what M0-04
+      validates against. If the project is on the legacy shared-secret (HS256) scheme,
+      M0-04 has a documented fallback — but prefer asymmetric: it means the API never
+      needs to hold the JWT secret.
+
+- [ ] **3.** Create a Storage bucket named `product-photos`, **private**, 10 MB file
+      size limit, allowed MIME types `image/jpeg,image/png,image/webp`.
+
+- [ ] **4.** Record these five values. Note which are secret:
+
+| Key | Secret? | Where used |
 |---|---|---|
-| `VITE_SUPABASE_URL` | no | `web/` |
-| `VITE_SUPABASE_ANON_KEY` | no | `web/` — public by design; RLS is what protects data |
-| `SUPABASE_ACCESS_TOKEN`, `SUPABASE_DB_PASSWORD` | **yes** | CI only, for `supabase db push` |
+| `Supabase:Url` | no | API + web |
+| `Supabase:AnonKey` | no | web only (login) |
+| `Supabase:ServiceKey` | **yes** | API only — signed upload URLs |
+| `ConnectionStrings:Db` | **yes** | API only |
+| `Supabase:JwksUrl` | no | API — derived from Url |
 
-Gone: `ConnectionStrings:Db`, `Supabase:ServiceKey`, `Supabase:JwksUrl`,
-`appsettings*.json`, and the `Program.cs` startup guard. No part of this system holds
-a database credential any more except the migration step in CI.
+- [ ] **5.** `appsettings.json` — committed, placeholders only:
 
-Asymmetric JWT signing keys stay enabled — `supabase-js` and PostgREST both want
-them — but nothing of ours validates a token by hand now.
+```json
+{
+  "Supabase": {
+    "Url": "__SET_LOCALLY__",
+    "ServiceKey": "__SET_LOCALLY__",
+    "PhotoBucket": "product-photos"
+  },
+  "ConnectionStrings": { "Db": "__SET_LOCALLY__" }
+}
+```
 
-**Rework needed:**
+- [ ] **6.** Real values go in `appsettings.Local.json` (gitignored) locally, and in
+      the host's environment variables in staging/prod. Commit
+      `appsettings.Local.json.example` showing the shape with fake values.
 
-- [ ] Strip the retired keys from `docs/SETUP.md`; replace the "connection string"
-      section with Supabase CLI setup (M0-08)
-- [ ] Confirm the `product-photos` bucket is **private** and reachable only through
-      storage policies, not a public URL
+- [ ] **7.** Add a startup guard so a misconfigured deploy fails loudly at boot
+      instead of quietly at the first request — in `Program.cs`:
+
+```csharp
+foreach (var key in new[] { "Supabase:Url", "Supabase:ServiceKey", "ConnectionStrings:Db" })
+{
+    var v = builder.Configuration[key];
+    if (string.IsNullOrWhiteSpace(v) || v == "__SET_LOCALLY__")
+        throw new InvalidOperationException($"Configuration '{key}' is not set.");
+}
+```
+
+- [ ] **8.** Write `docs/SETUP.md`: how a new developer gets from a clone to a running
+      API. Assume they have never used Supabase.
+
+- [ ] **9.** Commit.
 
 **Done when:**
-- [ ] `git grep -nE "eyJ|supabase\.co|postgres://|sb_secret"` (excluding `*.example`,
-      `docs/`, lockfiles, workflows) returns nothing
-- [ ] `docs/SETUP.md` describes only values that still exist
+- [ ] `git grep -nE "eyJ|supabase\.co|postgres://|sb_secret" -- ':!*.example' ':!docs/'`
+      returns nothing
+- [ ] Deleting `appsettings.Local.json` and running the API throws the guard exception
+      naming the missing key, and does not start
 
 ---
 
 ## M0-03 · EF Core, DbContext, first migration
 
-**Status:** ✗ **Superseded** by M0-08 (local stack) and M0-09 (first migration).
+**Depends on:** M0-02
+**Branch:** `feature/m0-efcore`
 
-EF Core, `AppDbContext`, the entity classes, `DbFixture` and Testcontainers are all
-retired with the API. Two things this task got right are carried forward as
-requirements on M0-09 rather than lost:
+**Files:**
+- Create: `src/Pajapan.Api/Domain/Users.cs`, `src/Pajapan.Api/Domain/Catalog.cs`,
+  `src/Pajapan.Api/Data/AppDbContext.cs`,
+  `src/Pajapan.Api/Data/Configurations/AppUserConfiguration.cs`,
+  `tests/Pajapan.Api.Tests/DbFixture.cs`
 
-- **Money precision is set once, globally, not per column.** The EF convention
-  `HavePrecision(12,2)` was the single most valuable line in the old `AppDbContext`.
-  Its replacement is a domain: `CREATE DOMAIN money_php AS numeric(12,2)`, used by
-  every monetary column, so no later migration can create a bare `numeric` and
-  silently change rounding.
-- **snake_case is the schema's native casing** — it was a translation layer before;
-  now it is simply how the tables are written, and TypeScript sees it directly.
+**Interfaces produced:** `AppDbContext` with `DbSet<AppUser> Users`,
+`DbSet<Category> Categories`; `AppUserRole` enum; `DbFixture` giving tests a
+migrated Postgres.
+
+**Steps:**
+
+- [ ] **1.** Add packages:
+
+```bash
+cd src/Pajapan.Api
+"/c/Program Files/dotnet/dotnet.exe" add package Npgsql.EntityFrameworkCore.PostgreSQL
+"/c/Program Files/dotnet/dotnet.exe" add package Microsoft.EntityFrameworkCore.Design
+cd ../../tests/Pajapan.Api.Tests
+"/c/Program Files/dotnet/dotnet.exe" add package Testcontainers.PostgreSql
+"/c/Program Files/dotnet/dotnet.exe" add package Microsoft.AspNetCore.Mvc.Testing
+```
+
+- [ ] **2.** `Domain/Users.cs` — only the two entities M0 needs. The remaining twelve
+      arrive in M1-01, as one migration, once the whole model is settled:
+
+```csharp
+namespace Pajapan.Api.Domain;
+
+public enum AppUserRole { Customer = 0, JapanBuyer = 1, Fulfilment = 2, Admin = 3 }
+
+public class AppUser
+{
+    public Guid Id { get; set; }              // == Supabase auth `sub`. Never generated.
+    public AppUserRole Role { get; set; } = AppUserRole.Customer;
+    public string DisplayName { get; set; } = "";
+    public string? Phone { get; set; }
+    public string Email { get; set; } = "";
+    public bool IsBlocked { get; set; }
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+```
+
+- [ ] **3.** `Data/AppDbContext.cs`. Two conventions applied globally, so no later task
+      has to remember them:
+
+```csharp
+protected override void ConfigureConventions(ModelConfigurationBuilder b)
+{
+    // Every decimal in the model is money. 12,2 unless a config overrides it.
+    b.Properties<decimal>().HavePrecision(12, 2);
+}
+
+protected override void OnModelCreating(ModelBuilder b)
+{
+    b.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
+    // snake_case in Postgres, PascalCase in C#.
+    foreach (var entity in b.Model.GetEntityTypes())
+    {
+        entity.SetTableName(ToSnake(entity.GetTableName()!));
+        foreach (var p in entity.GetProperties()) p.SetColumnName(ToSnake(p.Name));
+    }
+}
+```
+
+  > `HavePrecision(12,2)` at the convention level is the single most valuable line in
+  > this file. It means no future task can accidentally create a `numeric` column with
+  > default precision and silently truncate or over-round money.
+
+- [ ] **4.** `AppUserConfiguration`: `Id` is `ValueGeneratedNever()` (it comes from
+      Supabase), `Email` has a unique index, `Role` is stored as `int`.
+
+- [ ] **5.** Create and inspect the migration. **Read the generated SQL** — do not
+      apply it blind:
+
+```bash
+"/c/Program Files/dotnet/dotnet.exe" ef migrations add InitialUsers -p src/Pajapan.Api
+"/c/Program Files/dotnet/dotnet.exe" ef migrations script -p src/Pajapan.Api
+```
+
+- [ ] **6.** `DbFixture` — spins a real Postgres container and migrates it:
+
+```csharp
+public sealed class DbFixture : IAsyncLifetime
+{
+    private readonly PostgreSqlContainer _pg = new PostgreSqlBuilder()
+        .WithImage("postgres:17-alpine").Build();
+
+    public string ConnectionString => _pg.GetConnectionString();
+
+    public async Task InitializeAsync()
+    {
+        await _pg.StartAsync();
+        await using var db = NewContext();
+        await db.Database.MigrateAsync();
+    }
+
+    public AppDbContext NewContext() => new(new DbContextOptionsBuilder<AppDbContext>()
+        .UseNpgsql(ConnectionString).Options);
+
+    public Task DisposeAsync() => _pg.DisposeAsync().AsTask();
+}
+```
+
+- [ ] **7.** One test that proves precision survives a round trip — this is the guard
+      on Global Constraint 1:
+
+```csharp
+[Fact]
+public async Task Decimal_money_round_trips_without_precision_loss()
+{
+    await using var db = _fx.NewContext();
+    db.Categories.Add(new Category { Id = Guid.NewGuid(), Name = "t", Slug = "t" });
+    await db.SaveChangesAsync();
+    // asserted properly in M1-01 once Product.PricePhp exists; for now assert the
+    // convention is registered:
+    var prop = db.Model.FindEntityType(typeof(Category))!;
+    Assert.NotNull(prop);
+}
+```
+
+- [ ] **8.** Run tests, then commit.
+
+```bash
+"/c/Program Files/dotnet/dotnet.exe" test
+```
+
+**Done when:**
+- [ ] `dotnet ef migrations script` output has been read, and every money column in it
+      reads `numeric(12,2)` — not `numeric` and not `double precision`
+- [ ] `dotnet test` passes against a real Postgres container
+- [ ] Running the migration twice is a no-op, not an error
 
 ---
 
 ## M0-04 · JWT validation and CurrentUser
 
-**Status:** ✗ **Superseded.** `supabase-js` obtains and refreshes the token; PostgREST
-validates it; `auth.uid()` exposes it inside the database. There is nothing left for
-us to validate.
+**Depends on:** M0-03
+**Branch:** `feature/m0-auth`
 
-The one rule this task existed to protect **survives and moves to M0-09**:
+> **This is the highest-risk task in M0.** Every authorization rule in the app rests
+> on it. Spec §6.1 lists what must be true. Get a second pair of eyes on the PR.
 
-> **Role is read from our own table, never from the token.** A role claim in a JWT is
-> something Supabase's admin API can set and a client can attempt to forge. The
-> equivalent mistake under RLS is a policy that trusts `auth.jwt()`. Policies read
-> `app_user.role`; the old test `Role_claim_in_token_is_ignored` becomes an RLS test
-> in M0-09.
+**Files:**
+- Create: `src/Pajapan.Api/Infrastructure/CurrentUser.cs`,
+  `src/Pajapan.Api/Infrastructure/AuthPolicies.cs`,
+  `src/Pajapan.Api/Features/Me/MeEndpoints.cs`
+- Modify: `src/Pajapan.Api/Program.cs`
+- Test: `tests/Pajapan.Api.Tests/AuthTests.cs`
+
+**Interfaces produced:** `CurrentUser` (scoped, `Id`, `GetAsync()`),
+`AuthPolicies.Admin` / `.Fulfilment` / `.JapanBuyer` / `.Staff`,
+`GET /api/me` → `{ id, displayName, email, role }`.
+
+**Steps:**
+
+- [ ] **1.** Add `Microsoft.AspNetCore.Authentication.JwtBearer`.
+
+- [ ] **2.** Configure bearer auth against Supabase's JWKS:
+
+```csharp
+var supabaseUrl = builder.Configuration["Supabase:Url"]!.TrimEnd('/');
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(o =>
+    {
+        o.Authority = $"{supabaseUrl}/auth/v1";
+        o.MetadataAddress = $"{supabaseUrl}/auth/v1/.well-known/openid-configuration";
+        o.MapInboundClaims = false;
+        o.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer   = true,  ValidIssuer   = $"{supabaseUrl}/auth/v1",
+            ValidateAudience = true,  ValidAudience = "authenticated",
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ClockSkew = TimeSpan.FromSeconds(30),
+            NameClaimType = "sub",
+        };
+    });
+```
+
+  > **Fallback if the Supabase project is on legacy HS256:** replace
+  > `Authority`/`MetadataAddress` with
+  > `IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(cfg["Supabase:JwtSecret"]!))`.
+  > Prefer asymmetric — it keeps the signing secret out of the API entirely.
+  > `ValidateAudience` is not optional: Supabase issues `anon` tokens with the same
+  > issuer, and skipping it lets an unauthenticated anon key act as a logged-in user.
+
+  > **`MapInboundClaims = false` is not optional either.** Left at its default, the
+  > JWT stack rewrites standard claim names into WS-Federation URIs — `sub` becomes
+  > `http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier`. Step 3's
+  > `FindFirst("sub")` then returns null and *every authenticated request 500s*.
+  > `NameClaimType = "sub"` does not prevent this; it only chooses which claim
+  > becomes `User.Identity.Name`. Turn the mapping off at the boundary rather than
+  > teaching `CurrentUser` to look in two places — a fallback there would keep
+  > limping along reading a claim you did not intend the day the config changes.
+
+- [ ] **3.** `CurrentUser` — the only place the caller's identity is ever read:
+
+```csharp
+public sealed class CurrentUser(IHttpContextAccessor http, AppDbContext db)
+{
+    private AppUser? _cached;
+
+    public Guid Id => Guid.TryParse(
+        http.HttpContext?.User.FindFirst("sub")?.Value, out var id)
+            ? id
+            : throw new UnauthorizedAccessException("No sub claim on the token.");
+
+    /// Loads the AppUser row, creating it on first sight of a Supabase user.
+    public async ValueTask<AppUser> GetAsync(CancellationToken ct = default)
+    {
+        if (_cached is not null) return _cached;
+        var id = Id;
+        _cached = await db.Users.FirstOrDefaultAsync(u => u.Id == id, ct);
+        if (_cached is null)
+        {
+            _cached = new AppUser
+            {
+                Id = id,
+                Email = http.HttpContext!.User.FindFirst("email")?.Value ?? "",
+                Role = AppUserRole.Customer,   // never trust a role claim from the token
+            };
+            db.Users.Add(_cached);
+            await db.SaveChangesAsync(ct);
+        }
+        if (_cached.IsBlocked) throw new UnauthorizedAccessException("User is blocked.");
+        return _cached;
+    }
+}
+```
+
+  > Role is read from **our** table, never from the JWT. A role claim in a token is
+  > something Supabase's admin API can set; keeping authority in our database means
+  > role changes are immediate and are ours to audit.
+
+- [ ] **4.** `AuthPolicies` — a policy per role, plus `Staff` for "any non-customer".
+      Register with `AddAuthorization`, each policy asserting on the loaded `AppUser`
+      via an `IAuthorizationHandler` that resolves `CurrentUser`.
+
+- [ ] **5.** `GET /api/me`, `RequireAuthorization()`. Returns id, display name, email,
+      role. This is the endpoint the web app calls right after login.
+
+- [ ] **6.** Write the authorization tests **before** wiring any business endpoint.
+      These four are the contract every later milestone depends on:
+
+```csharp
+[Fact] public async Task No_token_is_401() { … }
+[Fact] public async Task Anon_key_token_is_401()            // audience check
+[Fact] public async Task Expired_token_is_401() { … }
+[Fact] public async Task First_login_creates_AppUser_as_Customer() { … }
+[Fact] public async Task Role_claim_in_token_is_ignored()
+    // forge a token with "role": "admin"; assert GET /api/me returns Customer
+```
+
+- [ ] **7.** Run the tests, confirm all five pass, commit.
+
+**Done when:**
+- [ ] All five auth tests pass
+- [ ] A token whose `aud` is `anon` is rejected with 401
+- [ ] A forged `role: admin` claim does **not** grant admin — verified by a test, not
+      by reading the code
+- [ ] `git grep -n "FindFirst(\"role\")"` returns nothing
 
 ---
 
 ## M0-05 · React application scaffold
 
-**Status:** ✓ **Stands**, with one deletion. `web/`, `lib/money.ts` and its tests, the
-router and the Tailwind/shadcn setup are all unaffected — `money.ts` never knew what
-the backend was.
+**Depends on:** M0-01
+**Branch:** `feature/m0-web-scaffold`
+**Runs in parallel with** M0-03/M0-04.
 
-`lib/apiClient.ts` is deleted in M0-10: there is no API to call. Note what it was
-*for*, because the requirement outlives it — it threw on non-2xx so that a failed
-request could not silently become an empty list. `supabase-js` returns
-`{ data, error }` instead of throwing, so Global Constraint 9 now has to be met at
-every call site rather than once in a wrapper. That is a downgrade in ergonomics and
-worth knowing about deliberately.
+**Files:**
+- Create: `web/` (Vite scaffold), `web/src/lib/apiClient.ts`,
+  `web/src/lib/money.ts`, `web/src/router.tsx`, `web/tailwind.config.ts`,
+  `web/.env.example`
+
+**Steps:**
+
+- [ ] **1.** Scaffold and install:
+
+```bash
+npm create vite@latest web -- --template react-ts
+cd web
+npm i react-router @tanstack/react-query @supabase/supabase-js
+npm i react-hook-form @hookform/resolvers zod
+npm i -D tailwindcss @tailwindcss/vite vitest
+npx shadcn@latest init
+```
+
+- [ ] **2.** `web/.env.example` — anon key only. **The service key must never appear
+      in this directory.** Anything in a `VITE_*` variable is shipped to the browser:
+
+```
+VITE_SUPABASE_URL=__SET_LOCALLY__
+VITE_SUPABASE_ANON_KEY=__SET_LOCALLY__
+VITE_API_URL=http://localhost:5100
+```
+
+- [ ] **3.** `lib/money.ts` — Global Constraint 1 on the client side. Money arrives as
+      a string and is never turned into a float for arithmetic:
+
+```ts
+/** Money is transported as a decimal string. Parse to cents (bigint) for maths. */
+export const toCents = (php: string): bigint => {
+  const m = /^-?\d+(\.\d{1,2})?$/.exec(php.trim());
+  if (!m) throw new Error(`Not a money string: ${php}`);
+  const [whole, frac = ""] = php.trim().split(".");
+  return BigInt(whole + frac.padEnd(2, "0"));
+};
+
+export const fromCents = (c: bigint): string =>
+  `${c / 100n}.${(c < 0n ? -c : c) % 100n}`.replace(/\.(\d)$/, ".0$1");
+
+export const formatPhp = (php: string) =>
+  new Intl.NumberFormat("en-PH", { style: "currency", currency: "PHP" })
+    .format(Number(php));   // display only — never feed this back into arithmetic
+```
+
+- [ ] **4.** `lib/apiClient.ts` — attaches the Supabase access token to every request
+      and **throws on non-2xx**. Throwing is what makes Global Constraint 9 achievable:
+      a client that returns `[]` on error makes silent failure the default.
+
+```ts
+export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const { data } = await supabase.auth.getSession();
+  const res = await fetch(`${import.meta.env.VITE_API_URL}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(data.session ? { Authorization: `Bearer ${data.session.access_token}` } : {}),
+      ...init.headers,
+    },
+  });
+  if (!res.ok) throw new ApiError(res.status, await res.json().catch(() => null));
+  return res.status === 204 ? (undefined as T) : res.json();
+}
+```
+
+- [ ] **5.** Wire `QueryClientProvider` and a router with three routes: `/` (catalog
+      placeholder), `/login`, `/admin` (placeholder).
+
+- [ ] **6.** Vitest test for `toCents`: `"1234.50"` → `123450n`; `"0.05"` → `5n`;
+      `"12.345"` throws; `"abc"` throws.
+
+- [ ] **7.** Commit.
+
+**Done when:**
+- [ ] `npm run build` succeeds with no TypeScript errors
+- [ ] `npm test` passes the money tests
+- [ ] `grep -ri "service" web/.env.example web/src` finds no service key
 
 ---
 
 ## M0-06 · Login end to end
 
-**Status:** ◐ **Mostly stands.** `LoginPage`, `useCurrentUser`, `RequireRole` and the
-three-state (loading / error / wrong-role) rendering all survive — those were always
-client concerns.
+**Depends on:** M0-04, M0-05
+**Branch:** `feature/m0-login`
 
-**Two things must be undone:**
+**Files:**
+- Create: `web/src/lib/supabase.ts`, `web/src/features/auth/LoginPage.tsx`,
+  `web/src/features/auth/useCurrentUser.ts`,
+  `web/src/features/auth/RequireRole.tsx`
+- Modify: `web/src/router.tsx`, `src/Pajapan.Api/Program.cs` (CORS)
 
-1. **CORS on the API** — gone with the API.
-2. **The `supabase.from(` / `supabase.rpc(` ban is now backwards.** M0-06 added an
-   ESLint `no-restricted-properties` rule and M0-07 added a CI grep, both failing the
-   build if `web/` queried Supabase directly. That was correct mechanical enforcement
-   of the old trust boundary. Under the new architecture it forbids the only way the
-   app can work, and would fail CI on the first M1 feature. Both are removed in M0-10.
+**Steps:**
 
-> Worth naming plainly: this guard did its job. It was not wrong, it is just enforcing
-> a decision that no longer holds. The replacement guard — "every table has RLS
-> enabled" (M0-09) — protects the same property the old one did.
+- [ ] **1.** CORS on the API — an explicit allowlist from configuration, never
+      `AllowAnyOrigin` combined with credentials:
 
-**Still true, still worth keeping:** `useCurrentUser` reads the role from `app_user`,
-not from the token. It just reads it with `supabase.from('app_user')` now instead of
-`GET /api/me`.
+```csharp
+builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
+    .WithOrigins(builder.Configuration.GetSection("Cors:Origins").Get<string[]>()!)
+    .AllowAnyHeader().AllowAnyMethod()));
+```
+
+- [ ] **2.** `lib/supabase.ts`: `createClient(url, anonKey)` with
+      `persistSession: true`. This client is used for **auth only** — never
+      `.from()`, never `.rpc()`. Spec §5.1.
+
+- [ ] **3.** Add an ESLint rule or a CI grep that fails the build on
+      `supabase.from(` / `supabase.rpc(` anywhere in `web/`. This is the mechanical
+      enforcement of the no-RLS decision; without it the constraint decays the first
+      time someone is in a hurry.
+
+- [ ] **4.** `LoginPage`: email + password sign-in, and email magic link. Show the
+      server's error message; never a generic "something went wrong".
+
+- [ ] **5.** `useCurrentUser()`: a TanStack Query hook calling `GET /api/me`,
+      `staleTime: 5min`. Returns `{ user, isLoading, error }` — three states, all of
+      which the UI must render distinctly.
+
+- [ ] **6.** `RequireRole`: a route wrapper. Loading → spinner. Error → an error panel
+      with a retry button. Wrong role → "You don't have access to this page", not a
+      redirect that looks like a bug.
+
+- [ ] **7.** Manually verify: sign up a new email, land on `/`, confirm an `app_user`
+      row exists with `role = 0`. Promote yourself with SQL:
+
+```sql
+update app_user set role = 3 where email = 'you@example.com';
+```
+
+- [ ] **8.** Commit.
+
+**Done when:**
+- [ ] A brand-new email can sign up, and `GET /api/me` returns their row with role
+      `Customer`
+- [ ] After the SQL promotion, `/admin` renders instead of the access message
+- [ ] Signing out and hitting `/api/me` returns 401 and the UI shows the login page
+- [ ] With the API stopped, the app shows an error state — **not** a spinner forever
+      and not an empty page
 
 ---
 
 ## M0-07 · CI and deployment
 
-**Status:** ◐ **Rework.** CI landed in
-[#66](https://github.com/Agile-Porkchops/pajapan/pull/66) and works; the deploy half
-was deliberately deferred and is now re-scoped to different targets.
+**Depends on:** M0-06
+**Branch:** `feature/m0-cicd` (done) · `feature/m0-deploy` (remaining)
 
-**What stands:** the `guards` and `web` jobs, and the secrets grep — including both of
-its hard-won exclusions (`package-lock.json`'s base64 integrity hashes, and
-`.github/workflows/` where the pattern text self-matches). Those were verified against
-real CI runs and the reasoning is unchanged by the pivot.
+> **Status: partly done in [#66](https://github.com/Agile-Porkchops/pajapan/pull/66).**
+> Steps 1, 2 and 6 are merged — `ci.yml`, the Dockerfile, `GET /health`, and the
+> README's "Running locally". **Remaining: steps 3–5, the deploys**, now targeting
+> **Railway** and **Cloudflare Pages** rather than Fly.io and Vercel (spec §5.3).
+> Also bump `node-version` in `ci.yml` from 22 to 24 to match what is installed.
 
-**What changes:**
+**Files:**
+- Create: `.github/workflows/ci.yml`, `.github/workflows/deploy-staging.yml`,
+  `src/Pajapan.Api/Dockerfile`, `railway.toml` (optional config-as-code)
 
-- [ ] Delete the `api` job (`dotnet restore`/`build`/`test`)
-- [ ] Delete the "Web never queries Supabase directly" guard — see M0-06
-- [ ] Add a guard that fails if any migration adds a table without enabling RLS
-- [ ] Bump `node-version` from 22 to 24, matching what is actually installed
-- [ ] Add a `db` job: `supabase start`, `supabase db reset`, run the database tests
-- [ ] Deploy `web/` to **Cloudflare Pages** (not Vercel), project root `web/`
-- [ ] Migrations via `supabase db push` in the deploy workflow, staging first
+**Steps:**
 
-Gone entirely: `Dockerfile`, `.dockerignore`, `fly.toml`, the `GET /health` endpoint
-and its tests. A health check exists to tell you whether *your* server is up; there
-is no longer a server of ours to be down.
+- [ ] **1.** `ci.yml`, on every PR: restore, build, `dotnet test`, `npm ci`,
+      `npm run build`, `npm test`. Plus the two guard greps:
 
-> Migrations run from CI, never by hand against a deployed database — unchanged, and
-> more important now that migrations carry the authorization rules too. A policy
-> hand-applied in the dashboard exists in no file and reaches production never.
+```yaml
+      - name: No secrets committed
+        run: |
+          ! git grep -nE "eyJ[A-Za-z0-9_-]{20,}|sb_secret_|postgres://[^_]" \
+            -- ':!*.example' ':!docs/'
+      - name: Web never queries Supabase directly
+        run: ! git grep -nE "supabase\.(from|rpc)\(" -- web/
+```
+
+- [ ] **2.** Dockerfile for the API: `mcr.microsoft.com/dotnet/sdk:10.0` build stage,
+      `aspnet:10.0` runtime stage, non-root user, `EXPOSE 8080`.
+
+- [ ] **3.** Deploy the API to **Railway** staging, Hobby plan. Service root directory
+      `src/Pajapan.Api`, so the build context and `.dockerignore` from #66 apply
+      unchanged. Secrets go in Railway service variables — never in `railway.toml`,
+      which is committed. Use the double-underscore names (`ConnectionStrings__Db`,
+      `Supabase__Url`), and `ConnectionStrings__Db` in ADO.NET keyword format, not
+      the URI the dashboard shows (`docs/SETUP.md`). Point Railway's health check at
+      `/health` and turn App Sleeping on (spec §5.3).
+
+  > The image listens on 8080 (`EXPOSE 8080`, `ASPNETCORE_HTTP_PORTS`). Make
+  > Railway's target port match — check it rather than assuming Railway detects it.
+
+- [ ] **4.** Deploy `web/` to **Cloudflare Pages**: project root `web/`, build
+      `npm run build`, output `dist`, with the staging `VITE_*` variables.
+      `VITE_API_URL` is the Railway staging URL. Add the Pages origin to the API's
+      `Cors:Origins` (M0-06) by name — never a wildcard. A missing entry fails as an
+      opaque CORS error in the browser, not as a readable 401.
+
+- [ ] **5.** Migrations run in the deploy workflow, before the new image takes traffic.
+      Railway deploys on push, so the ordering has to be arranged deliberately —
+      either gate the Railway deploy behind this workflow, or run it as Railway's
+      pre-deploy step. Pick one and **verify the order**: a new image running against
+      an unmigrated schema fails at its first query.
+
+```yaml
+      - run: dotnet ef database update -p src/Pajapan.Api
+        env:
+          ConnectionStrings__Db: ${{ secrets.STAGING_DB }}
+```
+
+  > Migrations run from CI, never by hand against a deployed database. A hand-run
+  > migration is how staging and production drift apart.
+
+- [ ] **6.** Add a `GET /health` endpoint that checks the database connection and
+      returns 503 if it cannot reach it. A health check that returns 200 without
+      touching the database tells you nothing.
+
+- [ ] **7.** Commit and confirm both deploys are green.
 
 **Done when:**
 - [ ] A PR runs CI and it passes
-- [ ] A PR containing a fake JWT still fails the secrets grep — re-verify by pushing
-      one, as #66 did; the exclusions changed around it
-- [ ] A migration creating a table without `ENABLE ROW LEVEL SECURITY` fails CI —
-      verify by actually writing one
-- [ ] Staging web can log in against staging Supabase over HTTPS
-
----
-
-## M0-08 · Supabase CLI and local stack
-
-**Depends on:** M0-02
-**Branch:** `feature/m0-supabase-cli`
-
-> Replaces M0-03's Testcontainers fixture. Every RLS and RPC test in every later
-> milestone runs against this, so it comes before anything that needs testing.
-
-**Files:** `supabase/config.toml`, `supabase/seed.sql`, `docs/SETUP.md`
-
-**Requirements:**
-
-- [ ] Supabase CLI installed and pinned in `docs/SETUP.md`; `supabase init` committed
-- [ ] `supabase start` brings up Postgres + GoTrue + PostgREST + Realtime locally
-- [ ] `supabase/seed.sql` creates **one confirmed user per role** — Customer,
-      JapanBuyer, Fulfilment, Admin — plus a second Customer. The second one is not
-      padding: every cross-customer isolation test needs someone to be isolated *from*.
-- [ ] Seeded users have known passwords so tests can `signInWithPassword`. These are
-      local-only fixtures and belong in the committed seed file; the secrets grep must
-      not trip on them
-- [ ] `supabase db reset` returns to a known state, applying migrations then seed
-- [ ] `docs/SETUP.md`: clone → `supabase start` → `npm run dev`, assuming no prior
-      Supabase knowledge
-
-**Done when:**
-- [ ] A clean clone reaches a running local stack following only `docs/SETUP.md`
-- [ ] `supabase db reset` twice in a row gives byte-identical state
-- [ ] A Vitest test can sign in as each seeded role and read back its own `app_user`
-      row
-
----
-
-## M0-09 · RLS foundation and structural guards 🔴
-
-**Depends on:** M0-08
-**Branch:** `feature/m0-rls-foundation`
-**Model:** Opus. This replaces M0-04 as the highest-risk task in M0 — every
-authorization rule in the app rests on the pattern established here.
-
-**Files:** `supabase/migrations/<ts>_app_user_and_rls.sql`,
-`supabase/tests/rls-structural.test.ts`
-
-**Requirements:**
-
-- [ ] `money_php` domain (`numeric(12,2)`) — see M0-03's carried-forward note. Every
-      monetary column in M1-01 uses it.
-- [ ] `app_user` table, `id` = `auth.users.id`, with `role`, `display_name`, `email`,
-      `phone`, `is_blocked`. Spec §4.3.
-- [ ] A trigger on `auth.users` insert creates the `app_user` row with role
-      `Customer`. This replaces `CurrentUser.GetAsync()`'s create-on-first-sight — and
-      is strictly better, because a user can no longer exist in auth with no
-      application row.
-- [ ] RLS enabled on `app_user`: a user reads and updates their own row; only Admin
-      may write `role`.
-- [ ] A role helper used by every later policy.
-
-> **The recursion trap, flagged because it will bite otherwise.** A policy on
-> `app_user` that calls a helper which itself selects from `app_user` recurses
-> infinitely and Postgres aborts the query. The helper must be `SECURITY DEFINER`
-> (so it bypasses RLS and cannot re-enter the policy) **and** `STABLE` (so Postgres
-> evaluates it once per statement rather than once per row — this is the difference
-> between a role check that is free and one that is a query per row):
->
-> ```sql
-> CREATE FUNCTION current_app_role() RETURNS text
-> LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
->   SELECT role FROM app_user WHERE id = auth.uid();
-> $$;
-> ```
->
-> Shape, not gospel — verify the recursion and the plan against the running stack
-> before building M1 on top of it.
-
-**The three structural tests.** These are not about `app_user`; they are the guards
-that make every *future* migration safe, which is why they belong here and not in
-M7-01:
-
-- [ ] Every table in `public` has `rowsecurity = true` — enumerate `pg_tables`. Fails
-      loudly on any table added later without a policy. Global Constraint 12.
-- [ ] Every `SECURITY DEFINER` function pins a `search_path` — enumerate `pg_proc`.
-      Global Constraint 13.
-- [ ] An anonymous client, holding only the anon key, can read the public catalog and
-      **nothing else**.
-
-**Done when:**
-- [ ] Signing up a brand-new user creates exactly one `app_user` row, role `Customer`
-- [ ] Customer A cannot read Customer B's `app_user` row — asserted from a real
-      signed-in client, not by reading the policy
-- [ ] A customer cannot promote themselves: `update app_user set role='Admin'` where
-      id = own id changes nothing
-- [ ] A forged `role` claim in the JWT grants nothing — the M0-04 test, ported
-- [ ] All three structural tests pass, and each has been seen to **fail** by
-      temporarily introducing the thing it detects
-
----
-
-## M0-10 · Rewire web to Supabase-native
-
-**Depends on:** M0-09
-**Branch:** `feature/m0-web-rewire`
-
-**Requirements:**
-
-- [ ] Delete `web/src/lib/apiClient.ts` and `VITE_API_URL`
-- [ ] Remove the `no-restricted-properties` ESLint rule banning `supabase.from`/`.rpc`
-      — M0-06
-- [ ] `useCurrentUser()` reads `app_user` via `supabase.from()` instead of `GET /api/me`
-- [ ] Establish the **error-handling convention every later task follows**: a shared
-      helper that takes `{ data, error }` and throws on `error`, so TanStack Query's
-      error state does the work `apiClient`'s throw used to. Without one, Global
-      Constraint 9 has to be remembered at every call site, and it will not be.
-
-**Done when:**
-- [ ] Login, `/admin` role gating, and sign-out all still work
-- [ ] With the local Supabase stack **stopped**, the app shows an error state — not a
-      spinner forever, not an empty page, not zeros
-- [ ] `git grep -n "VITE_API_URL\|apiClient"` returns nothing
+- [ ] A PR containing a fake JWT string fails CI on the secrets grep — verify by
+      actually pushing one, then removing it
+- [ ] Staging web can log in against staging API over HTTPS
+- [ ] Refreshing a deep link such as `/admin` on the Pages site loads the app, not a
+      404 — client-side routes need the SPA fallback
+- [ ] With the Railway service asleep, the first request still succeeds — slower, not
+      failed
+- [ ] `GET /health` returns 503 when the database is unreachable
+- [ ] `README.md` "Running locally" is accurate enough for someone else to follow
 
 ---
 
 ## Milestone exit
 
-- [ ] M0-07 reworked and M0-08…M0-10 merged to `main`
-- [ ] A teammate can clone, follow `docs/SETUP.md`, run `supabase start`, and log in
+- [ ] All 7 tasks merged to `main`
+- [ ] A teammate can clone, follow `docs/SETUP.md`, and log in locally
 - [ ] Staging is live and all three team members have accounts with the right roles
-- [ ] The three structural guards are in CI and have each been seen to fail
 - [ ] No secret is in git history — `git log -p | grep -E "eyJ|sb_secret_"` is empty

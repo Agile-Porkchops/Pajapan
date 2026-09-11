@@ -77,6 +77,20 @@ spec §10 unless noted.
 16. Every task ends with its **Done when** checklist verified by actually running the
     commands — not by reading the code and concluding it should work.
 
+**Structure** (spec §5.2)
+
+17. **CQRS via MediatR.** Every endpoint sends a Command (changes state) or a Query
+    (reads) through `ISender`, and that request's handler holds the logic. An
+    endpoint never touches `AppDbContext`. Queries never write: `AsNoTracking()`, no
+    `SaveChangesAsync`. The caller's identity reaches a handler only through an
+    injected `CurrentUser`, never as a property of a Command or Query (see 10). One
+    file per use case — `Features/<Slice>/<UseCase>.cs` holds the request, its handler
+    and its response — plus one `<Slice>Endpoints.cs` mapping the slice's routes.
+    Reference: `Features/Me/GetMe.cs`.
+    **Task code samples written before this rule put the logic inside the endpoint
+    lambda. That logic belongs in the handler — the sample shows *what* to do, not
+    *where*.**
+
 ---
 
 ## Versions
@@ -87,6 +101,7 @@ Actual installed versions, verified 2026-09-11 — not aspirational pins.
 |---|---|---|
 | .NET SDK | 10.0.400 | pinned in `global.json`. Use `& "C:\Program Files\dotnet\dotnet.exe"` — `dotnet` on PATH is the x86 runtime-only install with no SDK |
 | EF Core | 10.0.11 | with `Npgsql.EntityFrameworkCore.PostgreSQL` 10.0.3 |
+| MediatR | 14.2.0 | free Community license; key read from the `MEDIATR_LICENSE_KEY` env var |
 | Node | 24.14.0 | CI still pins 22 — see M0-07 |
 | React | 19.2 | |
 | Vite | 8.2 | |
@@ -116,7 +131,10 @@ pajapan/
 │       │   ├── AppDbContext.cs
 │       │   ├── Configurations/          one IEntityTypeConfiguration per entity
 │       │   └── Migrations/
-│       ├── Features/                    one folder per slice: endpoints + DTOs + validators
+│       ├── Features/                    one folder per slice — Constraint 17
+│       │   ├── Me/
+│       │   │   ├── MeEndpoints.cs       routes only: build the request, ISender.Send
+│       │   │   └── GetMe.cs             GetMeQuery + GetMeHandler + MeResponse
 │       │   ├── Catalog/
 │       │   ├── Orders/
 │       │   ├── Payments/
@@ -148,6 +166,11 @@ pajapan/
 **Why one file per aggregate rather than one per entity:** `Order` and `OrderItem`
 are never edited apart. Splitting them costs a file switch on every change and buys
 nothing.
+
+**Cross-cutting concerns are MediatR pipeline behaviors**, not code repeated in each
+handler. The first task that needs a validator (M1-02 or M1-03) adds FluentValidation
+and a single `ValidationBehavior<TRequest, TResponse>`; nothing adds one before a
+validator exists to run.
 
 ---
 

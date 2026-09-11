@@ -611,7 +611,9 @@ update app_user set role = 3 where email = 'you@example.com';
       which is committed. Use the double-underscore names (`ConnectionStrings__Db`,
       `Supabase__Url`), and `ConnectionStrings__Db` in ADO.NET keyword format, not
       the URI the dashboard shows (`docs/SETUP.md`). Point Railway's health check at
-      `/health` and turn App Sleeping on (spec §5.3).
+      `/health` and turn App Sleeping on (spec §5.3). Set `MEDIATR_LICENSE_KEY` as a
+      service variable too — MediatR's license requires it outside development and
+      testing (`docs/SETUP.md`).
 
   > The image listens on 8080 (`EXPOSE 8080`, `ASPNETCORE_HTTP_PORTS`). Make
   > Railway's target port match — check it rather than assuming Railway detects it.

@@ -450,7 +450,7 @@ challenging:
 | Styling | Tailwind CSS | |
 | Components | shadcn/ui | Copied into the repo, so no library lock-in and no upgrade treadmill |
 | Backend | .NET 10, **Minimal APIs** | Not MVC controllers: far less ceremony for what is mostly CRUD |
-| Request handling | **CQRS via MediatR** (free Community license) — each endpoint sends a Command or Query through `ISender`; one handler per use case | Endpoints stay one line; validation and other cross-cutting concerns become pipeline behaviors defined once. Chosen over plain handler classes for exactly that |
+| Request handling | **CQRS via Wolverine** (MIT), in-process only — each endpoint sends a Command or Query through `IMessageBus.InvokeAsync`; one handler per use case | Endpoints stay one line; validation and other cross-cutting concerns become Wolverine middleware defined once. Replaced MediatR on 2026-09-11: MediatR is commercial from v13, Wolverine is MIT |
 | ORM | EF Core 10 + Npgsql | As specified |
 | Migrations | EF Core migrations | Applied by CI, never by hand against production |
 | Auth | Supabase Auth; API validates JWT against Supabase JWKS | One auth system serves customers *and* staff |

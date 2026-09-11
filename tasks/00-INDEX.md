@@ -20,7 +20,7 @@ hand-edit an issue body.
 
 | Milestone | Tasks | Est. | Status |
 |---|---|---|---|
-| [M0 — Foundations](../docs/plan/M0-foundations.md) | 7 | 3–4d | ⬜ Not started |
+| [M0 — Foundations](../docs/plan/M0-foundations.md) | 7 | 3–4d | 🟨 M0-01…06 done · M0-07 partly done ([#66](https://github.com/Agile-Porkchops/pajapan/pull/66)), deploys remaining |
 | [M1 — Catalog](../docs/plan/M1-catalog.md) | 7 | 4–5d | ⬜ Not started |
 | [M2 — Storefront & orders](../docs/plan/M2-storefront-orders.md) | 9 | 5–6d | ⬜ Not started |
 | [M3 — Payments](../docs/plan/M3-payments.md) | 6 | 3–4d | ⬜ Not started |

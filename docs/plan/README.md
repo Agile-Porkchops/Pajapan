@@ -81,13 +81,17 @@ spec §10 unless noted.
 
 ## Versions
 
+Actual installed versions, verified 2026-09-11 — not aspirational pins.
+
 | Thing | Version | Note |
 |---|---|---|
-| .NET SDK | 10.0.400 | `& "C:\Program Files\dotnet\dotnet.exe"` — `dotnet` on PATH is the x86 runtime-only install with no SDK |
-| Node | 22 LTS | |
-| EF Core | 10.x | with `Npgsql.EntityFrameworkCore.PostgreSQL` |
-| React | 19 | |
-| Vite | 7 | |
+| .NET SDK | 10.0.400 | pinned in `global.json`. Use `& "C:\Program Files\dotnet\dotnet.exe"` — `dotnet` on PATH is the x86 runtime-only install with no SDK |
+| EF Core | 10.0.11 | with `Npgsql.EntityFrameworkCore.PostgreSQL` 10.0.3 |
+| Node | 24.14.0 | CI still pins 22 — see M0-07 |
+| React | 19.2 | |
+| Vite | 8.2 | |
+| TypeScript | 6.0 | |
+| Vitest | 5.0 | |
 | Postgres | 17 | whatever Supabase provisions |
 
 ---

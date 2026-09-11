@@ -463,12 +463,53 @@ challenging:
 
 | Piece | Where | Approx cost |
 |---|---|---|
-| React SPA | Vercel or Netlify, static | free |
-| C# API | Fly.io or Railway (single small instance) | ~$5–10/mo |
+| React SPA | Cloudflare Pages, static | free |
+| C# API | Railway, Hobby plan — one small container built from `src/Pajapan.Api/Dockerfile`, App Sleeping on | $5/mo, which includes $5 of usage |
 | Postgres + Storage + Auth | Supabase | free tier → $25/mo Pro |
 
-Deployment is push-to-deploy from `main` via GitHub Actions, with a `staging`
-environment that mirrors production and gets the migration first.
+Deployment is push-to-deploy from `main`: Cloudflare Pages builds `web/`, Railway
+builds the API image. A `staging` environment mirrors production and gets every
+migration first. Migrations run from CI, before the new image takes traffic.
+
+The SPA and the API are on **different origins**, so the API's CORS allowlist must
+name the Pages origins explicitly — production and staging, never a wildcard.
+
+> **Cold starts are the price of App Sleeping.** A sleeping container wakes on the
+> next request, and .NET startup adds a second or more to it. At ~100 orders a
+> month that is the right trade. If the storefront's first hit ever feels slow,
+> turn App Sleeping off — 0.5 GB always-on is roughly the plan's included $5 —
+> before reaching for anything cleverer.
+
+### 5.4 Rejected alternative: Supabase-native, no API
+
+Adopted on 2026-09-08 and reversed on 2026-09-11. Recorded here so it is not
+re-proposed without the reasons.
+
+**The proposal:** drop the C# API. The browser talks to Supabase directly through
+`supabase-js`, Row Level Security is the authorization boundary, and money-critical
+writes become Postgres `SECURITY DEFINER` functions. Zero hosting cost.
+
+**Why it was reversed:**
+
+1. **The cost argument disappeared.** The proposal was triggered by Fly.io and
+   Railway dropping their free tiers. Railway's Hobby plan runs this API for $5 a
+   month (§5.3).
+2. **RLS is row-level; it has nothing to say about columns.** A response DTO is a
+   column allowlist by construction. Without one, four places needed their own
+   view, trigger or function to stop a column leaking: the product cost price and
+   supplier, `Order.InternalNote`, `Shipment.CostPhp` / `DeclaredValuePhp`, and the
+   shopping list, which aggregates over orders carrying customer addresses. Each
+   one fails silently if forgotten.
+3. **Money on the wire.** PostgREST serialises `numeric` as a JSON *number*. The
+   API has one converter writing decimals as strings (§10.1); the alternative
+   needed a `::text` cast in every view and function.
+4. **Silent failure by default.** `supabase-js` returns `{ data, error }` rather
+   than throwing, so an unchecked call renders as an empty list — the exact
+   failure §10.8 forbids, which the API client prevents in one place.
+5. C# and a CQRS structure are what the team knows and will maintain well.
+
+> If RLS is ever added as defence in depth (§14, challenge 2), items 2 and 3 are
+> the traps to design for.
 
 ---
 
@@ -821,3 +862,28 @@ Not blocking the build, but each changes some detail:
 - What happens to an unpaid order when the cutoff passes — cancel, or roll to
   the next run? Currently a manual decision by staff.
 - Minimum order value, or a maximum per customer per run?
+
+---
+
+## 16. Surfaced during the September 2026 replan — not yet designed
+
+Two real requirements came up while reworking the architecture. Neither is in §4's
+data model and neither has a schema yet. They are recorded here so they are not
+rediscovered late.
+
+1. **Per-account chat, customer ↔ admin.** Not per order — one ongoing thread per
+   customer, used to confirm availability and settle payment questions. This is how
+   payment confirmation actually happens today, so it touches §8.1, which currently
+   treats the verification queue as the only channel. Needs its own table, access
+   scoped to the two participants, and a delivery mechanism: SignalR on the API, or
+   Supabase Realtime. **Choosing Realtime means the browser reads that table
+   directly, and §5.1 then makes RLS mandatory for it** — decide with that in view.
+   Design in M2 or M3.
+
+2. **"Tagged as a sale" and listing status are two independent facts.** §4.4.1's
+   single `Order.Status` enum conflates them. Because this is buy-on-behalf rather
+   than sell-from-stock, an admin confirming payment ("this is a sale") is a
+   separate event from whether the underlying item stays open to other customers.
+   One field cannot carry both without states that mean different things in
+   different contexts. Resolve before M2 builds ordering on top of the enum — see
+   also §14 challenge 4, which already suspected that enum of doing too much.

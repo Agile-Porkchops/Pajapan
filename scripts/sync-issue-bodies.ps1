@@ -24,46 +24,36 @@ param(
 $ErrorActionPreference = 'Stop'
 $blob = "https://github.com/$Repo/blob/main"
 
+function Get-Section([string]$md, [string]$heading, [string]$from) {
+    # Everything under "## <heading>" up to the next "## " heading.
+    $pattern = "(?ms)^##\s+$([regex]::Escape($heading))\s*\r?\n(.*?)(?=^##\s)"
+    $m = [regex]::Match($md, $pattern)
+    if (-not $m.Success) { throw "Section '## $heading' not found in $from" }
+    # Drop the horizontal rule that separates it from the next section.
+    return ($m.Groups[1].Value -replace '(?m)^---\s*$', '').Trim()
+}
+
 # Shared rules appended to every issue so each one stands alone.
-$constraints = @'
+#
+# Read from docs/plan/README.md rather than duplicated here. This used to be a
+# hardcoded copy, and it silently went stale the moment the plan changed -- after
+# the 2026-09-08 architecture pivot it was still telling every one of 57 issues to
+# use EF Core and an Idempotency-Key header. One copy, or it drifts.
+$readmePath = Join-Path $PlanDir 'README.md'
+if (-not (Test-Path $readmePath)) { throw "Cannot find $readmePath" }
+$readme = Get-Content $readmePath -Raw
+
+$constraints = @"
 ## Global constraints
 
-These apply to every task. Copied from `docs/plan/README.md`.
+Generated from ``$PlanDir/README.md`` -- do not edit here.
 
-**Money**
-1. All money is `decimal` — C# `decimal`, Postgres `numeric(12,2)`. Never `float`, `double`, `real`, or JS `number` arithmetic on money. Money crosses the wire as a JSON string.
-2. Every monetary field names its currency: `AmountPhp`, `ActualCostJpy`. No bare `Amount` anywhere.
-3. FX rates are recorded at the moment of use, never looked up at report time.
-4. **Prices come from the server.** A request body containing a price is ignored. The client sends `productId` + `qty`.
-
-**Data**
-
-5. Snapshot on write: order lines snapshot product name + price; orders snapshot the full shipping address. Editing a product must never change a past order.
-6. Timestamps are `timestamptz`, stored UTC. Run cutoffs are authored/displayed in JST; customer-facing times display Asia/Manila.
-7. Soft delete (`DeletedAt`) on anything money touches. Hard delete only on draft catalog entries.
-
-**Correctness**
-
-8. `POST /api/orders` and `POST /api/orders/{id}/payments` require an `Idempotency-Key` header. Double submission produces one record. No automatic retry on any write path.
-9. **No silent `catch`.** A screen that cannot load its data says so — it never renders zeros, an empty list, or an all-clear. `catch { }` and `catch { return []; }` fail review.
-
-**Security**
-
-10. `CustomerId` comes from the JWT `sub` claim only. Never from a body, query string, route parameter, or header.
-11. Another customer's resource returns `404`, not `403`.
-12. Route identifiers are UUIDs. `OrderCode` is displayed but never the lookup key on a customer endpoint.
-13. The Supabase service key lives only in the API environment. Never in `web/`, never in a `VITE_*` variable, never committed.
-
-**Process**
-
-14. Branch per task. Never commit to `main`.
-15. Conventional commits: `feat:`, `fix:`, `test:`, `chore:`, `docs:`.
-16. Verify every **Done when** item by running it — not by reading the code and concluding it should work.
+$(Get-Section $readme 'Global Constraints' $readmePath)
 
 ## Versions
 
-.NET SDK 10.0.400 (use `& "C:\Program Files\dotnet\dotnet.exe"` — `dotnet` on PATH is runtime-only) · Node 22 LTS · EF Core 10 + Npgsql · React 19 · Vite 7 · Postgres 17
-'@
+$(Get-Section $readme 'Versions' $readmePath)
+"@
 
 function Convert-Links([string]$md) {
     # Relative links work in the repo but not in an issue body. Make them absolute.
@@ -74,6 +64,8 @@ function Convert-Links([string]$md) {
     $md = $md -replace '\]\(\.\./plan/',              "]($blob/$PlanDir/"
     return $md
 }
+
+$constraints = Convert-Links $constraints
 
 $planFiles = Get-ChildItem -Path $PlanDir -Filter 'M?-*.md' | Sort-Object Name
 if (-not $planFiles) { throw "No plan files found in $PlanDir" }

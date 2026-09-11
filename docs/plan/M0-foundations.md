@@ -576,11 +576,17 @@ update app_user set role = 3 where email = 'you@example.com';
 ## M0-07 · CI and deployment
 
 **Depends on:** M0-06
-**Branch:** `feature/m0-cicd`
+**Branch:** `feature/m0-cicd` (done) · `feature/m0-deploy` (remaining)
+
+> **Status: partly done in [#66](https://github.com/Agile-Porkchops/pajapan/pull/66).**
+> Steps 1, 2 and 6 are merged — `ci.yml`, the Dockerfile, `GET /health`, and the
+> README's "Running locally". **Remaining: steps 3–5, the deploys**, now targeting
+> **Railway** and **Cloudflare Pages** rather than Fly.io and Vercel (spec §5.3).
+> Also bump `node-version` in `ci.yml` from 22 to 24 to match what is installed.
 
 **Files:**
 - Create: `.github/workflows/ci.yml`, `.github/workflows/deploy-staging.yml`,
-  `src/Pajapan.Api/Dockerfile`, `fly.toml`
+  `src/Pajapan.Api/Dockerfile`, `railway.toml` (optional config-as-code)
 
 **Steps:**
 
@@ -599,12 +605,28 @@ update app_user set role = 3 where email = 'you@example.com';
 - [ ] **2.** Dockerfile for the API: `mcr.microsoft.com/dotnet/sdk:10.0` build stage,
       `aspnet:10.0` runtime stage, non-root user, `EXPOSE 8080`.
 
-- [ ] **3.** Deploy the API to Fly.io staging. Set secrets with
-      `fly secrets set` — never in `fly.toml`, which is committed.
+- [ ] **3.** Deploy the API to **Railway** staging, Hobby plan. Service root directory
+      `src/Pajapan.Api`, so the build context and `.dockerignore` from #66 apply
+      unchanged. Secrets go in Railway service variables — never in `railway.toml`,
+      which is committed. Use the double-underscore names (`ConnectionStrings__Db`,
+      `Supabase__Url`), and `ConnectionStrings__Db` in ADO.NET keyword format, not
+      the URI the dashboard shows (`docs/SETUP.md`). Point Railway's health check at
+      `/health` and turn App Sleeping on (spec §5.3).
 
-- [ ] **4.** Deploy `web/` to Vercel, project root `web/`, with the staging env vars.
+  > The image listens on 8080 (`EXPOSE 8080`, `ASPNETCORE_HTTP_PORTS`). Make
+  > Railway's target port match — check it rather than assuming Railway detects it.
 
-- [ ] **5.** Migrations run in the deploy workflow, before the new image takes traffic:
+- [ ] **4.** Deploy `web/` to **Cloudflare Pages**: project root `web/`, build
+      `npm run build`, output `dist`, with the staging `VITE_*` variables.
+      `VITE_API_URL` is the Railway staging URL. Add the Pages origin to the API's
+      `Cors:Origins` (M0-06) by name — never a wildcard. A missing entry fails as an
+      opaque CORS error in the browser, not as a readable 401.
+
+- [ ] **5.** Migrations run in the deploy workflow, before the new image takes traffic.
+      Railway deploys on push, so the ordering has to be arranged deliberately —
+      either gate the Railway deploy behind this workflow, or run it as Railway's
+      pre-deploy step. Pick one and **verify the order**: a new image running against
+      an unmigrated schema fails at its first query.
 
 ```yaml
       - run: dotnet ef database update -p src/Pajapan.Api
@@ -626,6 +648,10 @@ update app_user set role = 3 where email = 'you@example.com';
 - [ ] A PR containing a fake JWT string fails CI on the secrets grep — verify by
       actually pushing one, then removing it
 - [ ] Staging web can log in against staging API over HTTPS
+- [ ] Refreshing a deep link such as `/admin` on the Pages site loads the app, not a
+      404 — client-side routes need the SPA fallback
+- [ ] With the Railway service asleep, the first request still succeeds — slower, not
+      failed
 - [ ] `GET /health` returns 503 when the database is unreachable
 - [ ] `README.md` "Running locally" is accurate enough for someone else to follow
 

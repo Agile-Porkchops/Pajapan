@@ -206,7 +206,8 @@ git grep -nE "\?\?\s*\[\]|\|\|\s*\[\]|catch.*return \[\]" -- web/src/
 **Steps:**
 
 - [ ] **1.** Confirm Supabase daily backups are on for production, and note the
-      retention period.
+      retention period. They exist only on Pro — the free plan keeps **no** backups,
+      which is one reason production launches on Pro (spec §5.3).
 - [ ] **2.** `scripts/backup.ps1` — `pg_dump` to a local file, for a copy that does not
       live in the same account as the thing it protects.
 - [ ] **3.** **Do a real restore.** Restore yesterday's production backup into a scratch
@@ -271,7 +272,9 @@ git grep -nE "\?\?\s*\[\]|\|\|\s*\[\]|catch.*return \[\]" -- web/src/
 
 **Steps:**
 
-- [ ] **1.** Production Supabase project, separate from staging, its own keys.
+- [ ] **1.** Production Supabase project, separate from staging, its own keys, **on the
+      Pro plan** (spec §5.3). Free projects pause after 7 days of low activity — a quiet
+      week between runs would take production down.
 - [ ] **2.** Run migrations against production from CI. Verify the schema matches
       staging: `dotnet ef migrations list` on both.
 - [ ] **3.** Create the three real staff accounts with correct roles. Verify each sees

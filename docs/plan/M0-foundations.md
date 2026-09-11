@@ -616,6 +616,14 @@ update app_user set role = 3 where email = 'you@example.com';
   > The image listens on 8080 (`EXPOSE 8080`, `ASPNETCORE_HTTP_PORTS`). Make
   > Railway's target port match — check it rather than assuming Railway detects it.
 
+  > **`ConnectionStrings__Db` must use Supabase's session pooler** — host
+  > `*.pooler.supabase.com`, port **5432**, username `postgres.<project-ref>`.
+  > The direct host `db.<ref>.supabase.co` is IPv6-only and Railway has no outbound
+  > IPv6, so the same string that works on your PC fails on Railway with
+  > `ENETUNREACH`. Not the transaction pooler on 6543 — it breaks Npgsql's prepared
+  > statements. Create the Railway service in the same region as the Supabase
+  > project (spec §5.3).
+
 - [ ] **4.** Deploy `web/` to **Cloudflare Pages**: project root `web/`, build
       `npm run build`, output `dist`, with the staging `VITE_*` variables.
       `VITE_API_URL` is the Railway staging URL. Add the Pages origin to the API's
@@ -626,7 +634,9 @@ update app_user set role = 3 where email = 'you@example.com';
       Railway deploys on push, so the ordering has to be arranged deliberately —
       either gate the Railway deploy behind this workflow, or run it as Railway's
       pre-deploy step. Pick one and **verify the order**: a new image running against
-      an unmigrated schema fails at its first query.
+      an unmigrated schema fails at its first query. `STAGING_DB` is the same
+      session-pooler string as step 3 — GitHub-hosted runners have no outbound IPv6
+      either.
 
 ```yaml
       - run: dotnet ef database update -p src/Pajapan.Api
@@ -648,6 +658,8 @@ update app_user set role = 3 where email = 'you@example.com';
 - [ ] A PR containing a fake JWT string fails CI on the secrets grep — verify by
       actually pushing one, then removing it
 - [ ] Staging web can log in against staging API over HTTPS
+- [ ] `GET /health` on the Railway staging URL returns 200 — the API reaches Supabase
+      through the session pooler
 - [ ] Refreshing a deep link such as `/admin` on the Pages site loads the app, not a
       404 — client-side routes need the SPA fallback
 - [ ] With the Railway service asleep, the first request still succeeds — slower, not
